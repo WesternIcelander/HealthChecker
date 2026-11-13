@@ -15,7 +15,7 @@ See `PLAN.md` for the design and milestones.
 - Test: `mvn test`
 - Entry point: `io.siggi.healthchecker.Main`
 - HTTP checks are built in. Every other check type is a separate plugin project
-  with its own git repo under `plugin-projects/` (ignored by this repo), e.g.
+  with its own git repo under `plugin-projects/` (excluded via `.git/info/exclude`), e.g.
   `plugin-projects/MinecraftChecker`.
 - Plugins compile against `HealthChecker-API`, plus Gson (`provided`). Keep the API
   module dependency-free. Gson is shaded into the app without relocation, because

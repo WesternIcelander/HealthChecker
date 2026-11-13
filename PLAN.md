@@ -27,8 +27,8 @@ Built on Java 21, Maven, Gson, and SiggiHTTP for the web server.
 | HealthChecker | `./` | `github.com/WesternIcelander/HealthChecker` | parent pom, API module, app module |
 | MinecraftChecker | `./plugin-projects/MinecraftChecker` | `github.com/WesternIcelander/MinecraftChecker` | the `minecraft` plugin |
 
-`plugin-projects/` holds separate repos nested inside the HealthChecker folder, so
-HealthChecker's `.gitignore` excludes `/plugin-projects/`.
+`plugin-projects/` holds separate repos nested inside the HealthChecker folder. It's
+excluded locally via `.git/info/exclude`, not `.gitignore`.
 
 ### Maven coordinates (group `io.siggi`)
 
@@ -1019,7 +1019,7 @@ listed after **Tests:**, and they must pass before the step is committed. Steps 
 test list are build, docs or manual steps.
 
 ### M1 — Skeleton, modules & config
-- [ ] Add `/plugin-projects/` and `.DS_Store` to `.gitignore`.
+- [ ] Add `.DS_Store` to `.gitignore`.
 - [ ] Convert to multi-module: `HealthChecker-Parent` (root), `HealthChecker-API` (`api/`), `HealthChecker` (`app/`, move `Main`); shading in app only, Gson not relocated. Add Gson and JUnit 5 + surefire. **Tests:** a trivial smoke test so `mvn test` runs in both modules.
 - [ ] `ConfigLoader`: server, dataDir, timezone, dashboard, defaults, sites, categories, endpoints (common fields incl. `id`, `category`, `reminders`), `${env:…}` substitution, collected error reporting. **Tests:** loading a full config; defaults applied; each validation rule; all errors reported together; env substitution and unresolved `${env:…}`.
 - [ ] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
