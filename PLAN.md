@@ -665,15 +665,24 @@ endpoint objects appear only inside `categories[].endpoints`.)
 
 ### Sessions
 
-- SiggiHTTP sessions (`Sessions.create(expiry, dir)` under `data/sessions`, so logins
-  survive restarts).
-- Cookie: SiggiHTTP sets `HttpOnly`, and `Secure` when the request is secure. It doesn't
-  set `SameSite`, and browsers then default to `Lax`, which is what we want. CSRF tokens
-  protect all state-changing POSTs regardless. If SiggiHTTP's `isSecure()` doesn't
-  reflect `X-Forwarded-Proto` from trusted proxies, HealthChecker re-issues the cookie
-  itself with `Secure` when `publicBaseUrl` is https. Don't patch SiggiHTTP for this.
-- The session ID is rotated on login. Logout is a POST with a CSRF token.
-- Configurable lifetime (default 7 days, sliding).
+- SiggiHTTP's new sessions API. The app owns one `Sessions`, built with
+  `new SessionsBuilder().setDirectory(data/sessions).setExpireTime(sessionDays)
+  .setCookieMaxAge(sessionDays).setSameSite(SameSite.LAX).build()`, so logins survive
+  restarts. Don't use the deprecated API (`Sessions.create`, `request.getSession()`,
+  `request.resetSession()`, `HTTPServerBuilder.setSessions`).
+- Access: `sessions.readSession(request)` for reads (no lock, never creates a session or
+  sets a cookie, so anonymous visitors get no cookie); `sessions.openSession(request)` in
+  try-with-resources only where the session is written, closed as soon as possible;
+  `sessions.resetSession(request)` at login (new ID, against session fixation);
+  `sessions.deleteSession(request)` at logout.
+- Cookie: `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` over HTTPS. CSRF tokens
+  protect all state-changing POSTs regardless. If `request.isSecure()` doesn't reflect
+  `X-Forwarded-Proto` from trusted proxies, work around it in HealthChecker (record it
+  under Decisions); don't patch SiggiHTTP. Any other cookie HealthChecker sets
+  is built with `CookieBakery`.
+- Logout is a POST with a CSRF token.
+- Configurable lifetime (default 7 days, sliding: idle timeout, and the cookie's
+  `Max-Age` is refreshed on each read).
 - `server.trustedProxies` controls which `X-Forwarded-For`/`-Proto` headers are trusted.
 
 ### Built-in login
@@ -1067,7 +1076,7 @@ test list are build, docs or manual steps.
 - [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
 ### M9 — Sessions, built-in login, roles & permissions
-- [ ] Sessions (`SessionsDisk`), cookie flags, ID rotation, sliding expiry, CSRF tokens. **Tests:** cookie flags; ID changes on login; expiry; CSRF rejection.
+- [ ] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
 - [ ] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
 - [ ] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
 - [ ] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
