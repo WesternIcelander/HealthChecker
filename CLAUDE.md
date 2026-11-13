@@ -36,3 +36,19 @@ See `PLAN.md` for the design and milestones.
   4. Push every repo you committed to right away (`git push`).
 - Don't batch several steps into one commit, and don't leave completed steps unpushed.
 - If a build or test fails, or a push is rejected, stop and report it; don't force-push.
+- Steps marked **(you)** need the user. Stop when the next unchecked step is one of them.
+
+## Boundaries for autonomous work
+
+- Only change this repo and the plugin repos under `plugin-projects/`. Never modify
+  sibling projects (`../SiggiHTTP`, `../SimpleJWT`, `../SimpleMailer`, …), even if a
+  library limitation gets in the way: work around it here and note it in the commit
+  message.
+- Tests and checks must never contact real external services. No real emails, Discord
+  webhooks, OIDC providers or Minecraft servers; use in-process fakes on ephemeral
+  ports. DNS lookups in tests go through an injected resolver.
+- Never commit secrets. Example configs use `${env:…}` placeholders.
+- Small design gaps the plan doesn't cover: pick the simplest option consistent with
+  `PLAN.md`, implement it, and record it under "Decisions" in `PLAN.md` in the same
+  commit. Stop and ask only if a choice would contradict the plan or affect security
+  or visibility rules.

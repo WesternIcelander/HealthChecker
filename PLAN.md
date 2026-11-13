@@ -665,8 +665,13 @@ endpoint objects appear only inside `categories[].endpoints`.)
 
 ### Sessions
 
-- SiggiHTTP sessions (`SessionsDisk` under `data/sessions`, so logins survive restarts).
-- Cookie: `HttpOnly`, `SameSite=Lax`, `Secure` when `server.publicBaseUrl` is https.
+- SiggiHTTP sessions (`Sessions.create(expiry, dir)` under `data/sessions`, so logins
+  survive restarts).
+- Cookie: SiggiHTTP sets `HttpOnly`, and `Secure` when the request is secure. It doesn't
+  set `SameSite`, and browsers then default to `Lax`, which is what we want. CSRF tokens
+  protect all state-changing POSTs regardless. If SiggiHTTP's `isSecure()` doesn't
+  reflect `X-Forwarded-Proto` from trusted proxies, HealthChecker re-issues the cookie
+  itself with `Secure` when `publicBaseUrl` is https. Don't patch SiggiHTTP for this.
 - The session ID is rotated on login. Logout is a POST with a CSRF token.
 - Configurable lifetime (default 7 days, sliding).
 - `server.trustedProxies` controls which `X-Forwarded-For`/`-Proto` headers are trusted.
@@ -691,7 +696,7 @@ Any number of providers, each shown as a "Sign in with …" button.
   code flow with **PKCE (S256)**, `state` and `nonce`. The `id_token` is verified with
   **SimpleJWT** (`io.siggi:SimpleJWT:1.1`) against the provider's JWKS (cached, refreshed
   when an unknown `kid` appears). The app checks `iss`, `aud`, `exp`/`iat` (with clock
-  skew), `nonce` and the algorithm allow-list (RS*/ES*/PS*; never `none` or HS*).
+  skew), `nonce` and the algorithm allow-list (RS256/384/512, ES256/384/512, which SimpleJWT supports; never `none`, HS* or anything else).
 - **`oauth2`** for providers that aren't OIDC (e.g. GitHub, Discord): `authorizeUrl`,
   `tokenUrl`, `userinfoUrl`, `scopes`, `idField`, `nameField`. Code flow, with PKCE where
   supported.
@@ -1059,7 +1064,7 @@ test list are build, docs or manual steps.
 - [ ] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
 - [ ] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
 - [ ] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
-- [ ] Manual check: jar in HealthChecker's `plugins/` shows up on the dashboard.
+- [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
 ### M9 — Sessions, built-in login, roles & permissions
 - [ ] Sessions (`SessionsDisk`), cookie flags, ID rotation, sliding expiry, CSRF tokens. **Tests:** cookie flags; ID changes on login; expiry; CSRF rejection.
@@ -1102,13 +1107,22 @@ test list are build, docs or manual steps.
 
 ### M15 — Email via SimpleMailer
 - [ ] `EmailNotifier`: `POST /v1/messages`, stable UUID per notification across retries, response-code handling; text + HTML bodies, subject summary, event permalink. **Tests:** fake SimpleMailer API: 202; retry after 503 reuses the same id; 401 and 400 permanent; payload shape; HTML escaping of endpoint names and messages.
-- [ ] Manual check against a real local SimpleMailer instance.
 
 ### M16 — Packaging & ops
 - [ ] Shutdown hook: final coverage heartbeat, stop scheduler, flush pending notifications (bounded), close checkers, kill HTTP server. **Tests:** shutdown closes checkers and writes final coverage within the time limit.
-- [ ] `mvn package` → runnable app jar; manual check with the MinecraftChecker jar in `plugins/`.
+- [ ] `mvn package` → runnable app jar; verify by starting it with `config.example.json`-derived test config and the MinecraftChecker jar in `plugins/`, checking `/health`, `/api/status` and `/`, then stopping it cleanly.
 - [ ] README: build, configure (`maxClass`, visibility, roles, history, auth, notifications, reminders, maintenance, sites), run, reverse proxy notes, backup of `data/`; sample systemd unit.
 - [ ] `PLUGINS.md`: writing a plugin (API, `settings()` / `SettingSpec`, `declareTarget`, Gson contract, services file, threading/timeout rules, minimal example, pointer to MinecraftChecker).
+
+### M17 — Acceptance with real services (you)
+
+These steps need your accounts, servers or secrets. The autonomous run stops before
+them; see CLAUDE.md.
+
+- [ ] **(you)** Run HealthChecker with your real config behind your reverse proxy; check the public page from a logged-out browser shows no targets.
+- [ ] **(you)** Configure a real OIDC/OAuth provider (e.g. Google or GitHub), sign in once to get your identifier from the "send this to the admin" page, add it to your user, restart, sign in.
+- [ ] **(you)** Point an email channel at your real SimpleMailer instance and a Discord channel at a real webhook; use "Send test notification" on each and confirm they arrive.
+- [ ] **(you)** Add a real Minecraft server (with an SRV record, if you have one) and confirm it shows UP.
 
 ### Later
 - Per-user / per-group access to private endpoints.
