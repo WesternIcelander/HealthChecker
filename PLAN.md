@@ -1058,7 +1058,7 @@ test list are build, docs or manual steps.
 - [x] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
 - [x] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
 - [x] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
-- [ ] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
+- [x] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
 - [ ] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
 
 ### M7 — Service page: list & calendar views
@@ -1330,3 +1330,20 @@ them; see CLAUDE.md.
   layout gives one section without a heading, and "Other" is headed "Other". Heading summary over the
   visible services: "{d} of {n} down" if any is DOWN, else "{u} of {n} not checked yet" if any is
   UNKNOWN, else "All operational" (maintenance is added with M12).
+- Sites (app, package `web.site`): `SiteResolver` takes the host from `Host`, or from the nearest (last)
+  `X-Forwarded-Host` entry when the socket peer is in `server.trustedProxies` (SiggiHTTP's own
+  `X-Forwarded-Host` handling always trusts loopback, so it isn't used). Hosts are compared lowercase,
+  without port (bracketed IPv6 keeps its brackets) and without a trailing dot; `*.example.com` matches
+  subdomains at any depth but not `example.com` itself. A missing `Host` matches no site. A site's scope
+  uses each endpoint's category in the effective layout (so a service moved by the layout editor follows
+  it); "Other" can only be included by endpoint id. `Site.scope` filters the resolved layout before
+  `CategoryGrouping` applies visibility. `Site.link(path)` is the only way links are built: the site's
+  `publicBaseUrl`, else `server.publicBaseUrl`, else a root-relative path (paths starting with `//` are
+  rejected). `server.unknownHosts: "reject"` gives `404` on dashboard pages and the API; `/health` and
+  `/static/` answer on any host. `siteFor(endpoint)` (first site including it, else default) is ready for
+  notification links.
+- A minimal `StatusPage` (app, package `web.page`) serves `/` and `/api/status` so scoping is testable
+  end to end; the full main page and API fields come with the next step. Overall state is DOWN if any
+  service the viewer sees in scope is down (`/api/status` → 503), else UNKNOWN if any isn't checked
+  yet, else UP; the HTML page is always `200`. The viewer comes from a request → `Viewer` function
+  (anonymous until M9). Both responses are `Cache-Control: no-store`.
