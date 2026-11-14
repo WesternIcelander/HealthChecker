@@ -250,6 +250,32 @@ public final class EndpointStore {
     public synchronized StoredEndpoint putEndpoint(int expectedVersion, JsonObject entry)
             throws InvalidEntryException, VersionConflictException, IOException {
         State current = checkVersion(expectedVersion);
+        EndpointDefinition definition = check(current, entry);
+        String id = definition.id();
+        StoredEndpoint stored = new StoredEndpoint(id, Source.DASHBOARD, definition, entry, List.of());
+        List<StoredEndpoint> endpoints = new ArrayList<>(current.endpoints());
+        int index = indexOf(endpoints, id);
+        if (index >= 0) {
+            endpoints.set(index, stored);
+        } else {
+            endpoints.add(stored);
+        }
+        write(new State(current.version() + 1, current.categories(), endpoints));
+        return stored;
+    }
+
+    /**
+     * Validates a dashboard endpoint entry exactly as {@link #putEndpoint} would, without writing
+     * anything (for "Test now").
+     *
+     * @return the parsed endpoint
+     * @throws InvalidEntryException if the entry is invalid or its id belongs to a config endpoint
+     */
+    public EndpointDefinition check(JsonObject entry) throws InvalidEntryException {
+        return check(state, entry);
+    }
+
+    private EndpointDefinition check(State current, JsonObject entry) throws InvalidEntryException {
         JsonElement idElement = entry.get("id");
         String id = idElement instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
         if (id != null && configEndpointIds().contains(id)) {
@@ -268,16 +294,7 @@ public final class EndpointStore {
         } catch (RuntimeException | LinkageError e) {
             throw new InvalidEntryException(List.of("validation failed: " + e));
         }
-        StoredEndpoint stored = new StoredEndpoint(id, Source.DASHBOARD, parsed.value(), entry, List.of());
-        List<StoredEndpoint> endpoints = new ArrayList<>(current.endpoints());
-        int index = indexOf(endpoints, id);
-        if (index >= 0) {
-            endpoints.set(index, stored);
-        } else {
-            endpoints.add(stored);
-        }
-        write(new State(current.version() + 1, current.categories(), endpoints));
-        return stored;
+        return parsed.value();
     }
 
     /**

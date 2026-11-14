@@ -1090,7 +1090,7 @@ test list are build, docs or manual steps.
 - [x] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
 - [x] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
 - [x] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
-- [ ] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
+- [x] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
 - [ ] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
 - [ ] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
 - [ ] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
@@ -1602,3 +1602,15 @@ them; see CLAUDE.md.
   pages get the endpoint with those as `Endpoint.pastTargets`, and `ViewFilter.leaks` checks current and past values.
   Past targets are never shown, only filtered. Targets declared before this change (config edits plus a restart)
   aren't known; they're remembered from the first start with this version on.
+- "Test now" (app, `web.page.EndpointEditor`, `schedule.OneOffCheck`, `auth.ActionRateLimiter`): a "Test now" button
+  (`action=test`) next to Save on the add/edit form, shown once a type is chosen; same access rules and CSRF as saving,
+  so config-defined endpoints (read-only, POST `403`) can't be tested from the dashboard. Every test request counts
+  against the user's limit first (10 per sliding minute per user id, in memory; invalid forms count too, since
+  validation already runs the plugin's `create()`); over the limit the form comes back with `429`, `Retry-After` and
+  the values kept. The form is then validated exactly like a save (`EndpointStore.check`, which `putEndpoint` now
+  shares, without the version check), and `OneOffCheck` creates a fresh checker, runs one check on its own virtual
+  thread with the scheduler's rules (timeout + 1 s grace, then interrupted; "timeout after N ms", "check failed (…)",
+  "check returned no result") and closes it (when the check returns, or after the grace period at the latest). The
+  form is shown again with the result above it: passed/failed, latency, message and details, and "Nothing was saved."
+  Nothing is written, registered or recorded in the history or status. The request waits for the check (at most the
+  endpoint's timeout plus grace).

@@ -395,8 +395,8 @@
       }
       target.textContent = "";
       if (template) target.appendChild(template.content.cloneNode(true));
-      var save = form.querySelector(".ee-save");
-      if (save) save.hidden = !template;
+      var buttons = form.querySelectorAll(".ee-save, .ee-test");
+      for (var j = 0; j < buttons.length; j++) buttons[j].hidden = !template;
     });
   }
 

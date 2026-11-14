@@ -5,7 +5,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import io.siggi.healthchecker.api.CheckPlugin;
+import io.siggi.healthchecker.api.CheckResult;
+import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.api.SettingSpec;
+import io.siggi.healthchecker.auth.ActionRateLimiter;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -17,6 +20,9 @@ import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.config.Visibility;
 import io.siggi.healthchecker.plugin.PluginManager;
+import io.siggi.healthchecker.schedule.EndpointFactory;
+import io.siggi.healthchecker.schedule.OneOffCheck;
+import io.siggi.healthchecker.status.CheckRecord;
 import io.siggi.healthchecker.web.Html;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.site.Site;
@@ -25,6 +31,8 @@ import io.siggi.healthchecker.web.view.Viewer;
 import io.siggi.http.HTTPRequest;
 
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -56,6 +64,10 @@ import java.util.stream.Collectors;
  * entered. Saving ({@code action=save}) goes through {@link EndpointStore#putEndpoint}, i.e. the same
  * validation as config loading including the plugin's {@code create()}; errors are shown next to their
  * fields (by setting key) and nothing is saved until everything is valid.
+ * <p>"Test now" ({@code action=test}) validates the form the same way, then runs one check with its
+ * values through a {@link OneOffCheck} and shows the result above the form, without saving anything.
+ * It's rate-limited per user ({@value #TEST_LIMIT} tests per {@link #TEST_WINDOW}); over the limit
+ * the form comes back with {@code 429} and {@code Retry-After}.
  */
 public final class EndpointEditor {
     public static final String PATH = "/admin/endpoints";
@@ -74,9 +86,24 @@ public final class EndpointEditor {
     private final EndpointStore store;
     private final PluginManager plugins;
     private final Config config;
+    private final ActionRateLimiter testLimiter;
+    private final OneOffCheck oneOffCheck;
+
+    /** "Test now" runs per user within {@link #TEST_WINDOW}. */
+    public static final int TEST_LIMIT = 10;
+    public static final Duration TEST_WINDOW = Duration.ofMinutes(1);
 
     public EndpointEditor(SiteResolver sites, Permissions permissions, SessionManager sessions, EndpointStore store,
                           PluginManager plugins, Config config) {
+        this(sites, permissions, sessions, store, plugins, config,
+                new ActionRateLimiter(TEST_LIMIT, TEST_WINDOW, Clock.systemUTC()));
+    }
+
+    /** @param testLimiter limits "Test now" per user id */
+    public EndpointEditor(SiteResolver sites, Permissions permissions, SessionManager sessions, EndpointStore store,
+                          PluginManager plugins, Config config, ActionRateLimiter testLimiter) {
+        this.testLimiter = testLimiter;
+        this.oneOffCheck = new OneOffCheck(new EndpointFactory(plugins));
         this.sites = sites;
         this.permissions = permissions;
         this.sessions = sessions;
@@ -176,6 +203,10 @@ public final class EndpointEditor {
         Form form = Form.fromPost(post == null ? Map.of() : post);
         if (existing != null) form.fields.put("id", existing.id());
         String action = post == null ? null : post.get("action");
+        if ("test".equals(action)) {
+            testNow(request, site, existing, form);
+            return;
+        }
         if (!"save".equals(action)) {
             // Step one of the no-JS form (or "Change type"): show the form for the chosen type.
             formPage(request, site, "200 OK", existing, form, Errors.none(), null);
@@ -216,6 +247,50 @@ public final class EndpointEditor {
         request.response.setHeader("Cache-Control", "no-store");
         request.response.setHeader("Content-Length", "0");
         request.response.write(new byte[0]);
+    }
+
+    /**
+     * "Test now": counts against the user's limit, validates the form like a save (without the
+     * version check), runs one check with its values and shows the form again with the result.
+     * Nothing is written.
+     */
+    private void testNow(HTTPRequest request, Site site, EndpointStore.StoredEndpoint existing, Form form)
+            throws Exception {
+        String user = permissions.user(request).map(u -> u.id()).orElse("");
+        Optional<Duration> wait = testLimiter.tryAcquire(user);
+        if (wait.isPresent()) {
+            long seconds = Math.max(1, (wait.get().toMillis() + 999) / 1000);
+            Errors limited = new Errors();
+            limited.general.add("Too many tests. Try again in " + seconds + " s.");
+            request.response.setHeader("Retry-After", Long.toString(seconds));
+            formPage(request, site, "429 Too Many Requests", existing, form, limited, null, null);
+            return;
+        }
+        Errors errors = new Errors();
+        JsonObject entry = toEntry(form, errors);
+        if (!errors.isEmpty()) {
+            formPage(request, site, "400 Bad Request", existing, form, errors, null, null);
+            return;
+        }
+        EndpointDefinition definition;
+        try {
+            definition = store.check(entry);
+        } catch (EndpointStore.InvalidEntryException e) {
+            formPage(request, site, "400 Bad Request", existing, form, Errors.of(e.errors(), knownKeys(form.get("type"))),
+                    null, null);
+            return;
+        }
+        CheckRecord record;
+        try {
+            record = oneOffCheck.run(definition);
+        } catch (ConfigException e) {
+            // Validation just created a checker for these values, so only a flaky plugin gets here.
+            Errors failed = new Errors();
+            failed.general.add("The check couldn't be started: " + e.getMessage());
+            formPage(request, site, "400 Bad Request", existing, form, failed, null, null);
+            return;
+        }
+        formPage(request, site, "200 OK", existing, form, Errors.none(), null, record);
     }
 
     private static int parseVersion(String value) {
@@ -586,6 +661,30 @@ public final class EndpointEditor {
         PageSupport.write(request, "200 OK", "text/html; charset=utf-8", html.toString());
     }
 
+    /** The "Test now" result: pass/fail, latency, message and details. */
+    private static void testResult(StringBuilder html, CheckRecord test) {
+        CheckResult result = test.result();
+        html.append("<section class=\"ee-test-result ").append(result.success() ? "ee-test-pass" : "ee-test-fail")
+                .append("\" role=\"status\"><h3>Test result: ").append(result.success() ? "passed" : "failed")
+                .append("</h3><dl class=\"facts\">");
+        testFact(html, "Latency", test.latency().toMillis() + " ms");
+        if (!result.message().isEmpty()) testFact(html, "Message", result.message());
+        if (!result.details().isEmpty()) {
+            html.append("<div class=\"fact\"><dt>Details</dt><dd><ul class=\"plain\">");
+            for (Map.Entry<String, Object> e : result.details().entrySet()) {
+                html.append("<li>").append(Html.escape(e.getKey())).append(": ")
+                        .append(Html.escape(String.valueOf(e.getValue()))).append("</li>");
+            }
+            html.append("</ul></dd></div>");
+        }
+        html.append("</dl><p class=\"muted\">Nothing was saved.</p></section>\n");
+    }
+
+    private static void testFact(StringBuilder html, String label, String value) {
+        html.append("<div class=\"fact\"><dt>").append(Html.escape(label)).append("</dt><dd>")
+                .append(Html.escape(value)).append("</dd></div>");
+    }
+
     private static void crumbs(StringBuilder html, Site site) {
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a> · ")
                 .append("<a href=\"").append(Html.escape(site.link(PATH))).append("\">Manage services</a></p>\n");
@@ -598,6 +697,12 @@ public final class EndpointEditor {
      */
     private void formPage(HTTPRequest request, Site site, String status, EndpointStore.StoredEndpoint existing,
                           Form form, Errors errors, String notice) throws Exception {
+        formPage(request, site, status, existing, form, errors, notice, null);
+    }
+
+    /** @param test the result of "Test now", shown above the form, or {@code null} */
+    private void formPage(HTTPRequest request, Site site, String status, EndpointStore.StoredEndpoint existing,
+                          Form form, Errors errors, String notice, CheckRecord test) throws Exception {
         Viewer viewer = permissions.viewer(request);
         boolean create = existing == null;
         String title = create ? "Add service" : "Edit " + (existing.enabled() ? existing.definition().name() : nameOf(existing));
@@ -615,6 +720,7 @@ public final class EndpointEditor {
         } else if (!errors.isEmpty()) {
             html.append("<p class=\"form-error\" role=\"alert\">Nothing was saved. Please fix the problems marked below.</p>\n");
         }
+        if (test != null) testResult(html, test);
         if (!errors.general.isEmpty()) {
             html.append("<ul class=\"form-error-list ee-general-errors\">");
             for (String error : errors.general) html.append("<li>").append(Html.escape(error)).append("</li>");
@@ -629,6 +735,8 @@ public final class EndpointEditor {
         boolean typeChosen = fields(html, form, errors, create, false);
         html.append("<div class=\"ee-actions\"><button type=\"submit\" name=\"action\" value=\"save\" class=\"button button-primary ee-save\"")
                 .append(typeChosen ? "" : " hidden").append(">Save</button>")
+                .append("<button type=\"submit\" name=\"action\" value=\"test\" class=\"button ee-test\"")
+                .append(typeChosen ? "" : " hidden").append(">Test now</button>")
                 .append("<a class=\"button\" href=\"").append(Html.escape(site.link(PATH))).append("\">Cancel</a></div>\n")
                 .append("</form>\n");
         // With JS, changing the type swaps in that type's fields from these templates.

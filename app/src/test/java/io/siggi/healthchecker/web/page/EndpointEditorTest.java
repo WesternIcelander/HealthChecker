@@ -7,6 +7,7 @@ import io.siggi.healthchecker.api.Checker;
 import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.api.EndpointConfig;
 import io.siggi.healthchecker.api.SettingSpec;
+import io.siggi.healthchecker.auth.ActionRateLimiter;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.Role;
@@ -35,12 +36,15 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -61,8 +65,37 @@ class EndpointEditorTest {
     private WebServer web;
     private PluginManager plugins;
     private EndpointStore store;
+    /** Replaces the default "Test now" limiter when set before {@link #start}. */
+    private ActionRateLimiter testLimiter;
 
-    /** A plugin with one setting of every kind; {@code host = "bad"} is rejected on its field. */
+    /** Checks run and checkers closed by {@link TestPlugin}. */
+    static final AtomicInteger CHECKS = new AtomicInteger();
+    static final AtomicInteger CLOSED = new AtomicInteger();
+
+    /** A clock tests can move forward. */
+    static final class MutableClock extends Clock {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return java.time.ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
+    /**
+     * A plugin with one setting of every kind; {@code host = "bad"} is rejected on its field. Its check
+     * passes with the host as a detail, or fails ("too slow") with {@code mode = "slow"}.
+     */
     static final class TestPlugin implements CheckPlugin {
         @Override
         public String type() {
@@ -92,7 +125,19 @@ class EndpointEditorTest {
             config.optString("mode");
             config.optStringList("tags");
             if (host.equals("bad")) throw new ConfigException("host", "this host is not allowed");
-            return timeout -> CheckResult.ok("ok");
+            boolean slow = config.optString("mode").filter("slow"::equals).isPresent();
+            return new Checker() {
+                @Override
+                public CheckResult check(Duration timeout) {
+                    CHECKS.incrementAndGet();
+                    return slow ? CheckResult.fail("too slow").with("rtt", 5000) : CheckResult.ok("ok").with("checked", host);
+                }
+
+                @Override
+                public void close() {
+                    CLOSED.incrementAndGet();
+                }
+            };
         }
     }
 
@@ -112,7 +157,8 @@ class EndpointEditorTest {
         UserDirectory users = UserDirectory.of(List.of(
                 new User("root", "Root", Role.ADMIN, null, List.of(), false),
                 new User("vic", "Vic", Role.VIEWER, null, List.of(), false),
-                new User("mgr", "Mgr", MANAGE_ONLY, null, List.of(), false)));
+                new User("mgr", "Mgr", MANAGE_ONLY, null, List.of(), false),
+                new User("ada", "Ada", Role.ADMIN, null, List.of(), false)));
         web = new WebServer(new ServerConfig(0, "127.0.0.1", null, List.of(), UnknownHostsPolicy.DEFAULT));
         SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
         Permissions permissions = new Permissions(sessions, users::user);
@@ -123,7 +169,10 @@ class EndpointEditorTest {
         });
         web.register("/test-csrf", request -> PageSupport.write(request, "200 OK", "text/plain; charset=utf-8",
                 sessions.csrfToken(request)));
-        new EndpointEditor(sites, permissions, sessions, store, plugins, config).register(web);
+        CHECKS.set(0);
+        CLOSED.set(0);
+        (testLimiter == null ? new EndpointEditor(sites, permissions, sessions, store, plugins, config)
+                : new EndpointEditor(sites, permissions, sessions, store, plugins, config, testLimiter)).register(web);
         web.start();
     }
 
@@ -417,6 +466,98 @@ class EndpointEditorTest {
         assertEquals(403, post("/admin/endpoints/new", new Session(root.cookie(), "0".repeat(64)),
                 testForm("shop", "x.example.invalid")).statusCode());
         assertEquals(0, store.version());
+    }
+
+    @Test
+    void testNowReturnsTheResultWithoutPersisting() throws Exception {
+        start(null);
+        Session root = login("root");
+        Path file = dataDir.resolve(EndpointStore.FILE_NAME);
+        HttpResponse<String> r = post("/admin/endpoints/new", root, testForm("probe", "probe.example.invalid",
+                "action", "test", "s.mode", "slow"));
+        assertEquals(200, r.statusCode(), r.body());
+        String html = withoutTemplates(r.body());
+        assertTrue(html.contains("class=\"ee-test-result ee-test-fail\""));
+        assertTrue(html.contains("Test result: failed"));
+        assertTrue(html.contains("<dt>Latency</dt><dd>"));
+        assertTrue(html.contains("<dt>Message</dt><dd>too slow</dd>"));
+        assertTrue(html.contains("<li>rtt: 5000</li>"));
+        assertTrue(html.contains("Nothing was saved."));
+        assertTrue(field(html, "host").contains("value=\"probe.example.invalid\""), "the form keeps its values");
+        assertEquals(1, CHECKS.get());
+        assertEquals(CHECKS.get() + 1, CLOSED.get(), "the validation checker and the test checker are both closed");
+        assertEquals(0, store.version());
+        assertTrue(store.endpoint("probe").isEmpty());
+        assertFalse(Files.exists(file));
+
+        // Testing changed values of a saved endpoint leaves the saved entry alone.
+        assertEquals(303, post("/admin/endpoints/new", root, testForm("probe", "probe.example.invalid")).statusCode());
+        String saved = store.endpoint("probe").orElseThrow().entry().toString();
+        String before = Files.readString(file);
+        r = post("/admin/endpoints/probe", root, testForm("probe", "new.example.invalid", "version", "1",
+                "action", "test"));
+        assertEquals(200, r.statusCode(), r.body());
+        html = withoutTemplates(r.body());
+        assertTrue(html.contains("Test result: passed"));
+        assertTrue(html.contains("<li>checked: new.example.invalid</li>"));
+        assertEquals(1, store.version());
+        assertEquals(saved, store.endpoint("probe").orElseThrow().entry().toString());
+        assertEquals(before, Files.readString(file));
+    }
+
+    @Test
+    void testNowValidatesLikeSaveAndRunsNothingWhenInvalid() throws Exception {
+        start(null);
+        Session root = login("root");
+        HttpResponse<String> r = post("/admin/endpoints/new", root, testForm("probe", "bad", "action", "test"));
+        assertEquals(400, r.statusCode());
+        String html = withoutTemplates(r.body());
+        assertTrue(field(html, "host").contains("this host is not allowed"));
+        assertFalse(html.contains("ee-test-result"));
+        assertEquals(0, CHECKS.get());
+        // The button is part of the form once a type is chosen.
+        assertTrue(html.contains("name=\"action\" value=\"test\""));
+        // Config-defined endpoints can't be tested through their (read-only) form, nor without the permission.
+        assertEquals(403, post("/admin/endpoints/website", root, testForm("website", "x.example.invalid",
+                "action", "test")).statusCode());
+        assertEquals(403, post("/admin/endpoints/new", login("vic"), testForm("probe", "x.example.invalid",
+                "action", "test")).statusCode());
+        assertEquals(403, post("/admin/endpoints/new", login("mgr"), testForm("probe", "x.example.invalid",
+                "action", "test")).statusCode());
+        assertEquals(0, CHECKS.get());
+    }
+
+    @Test
+    void testNowIsRateLimitedPerUser() throws Exception {
+        MutableClock clock = new MutableClock();
+        testLimiter = new ActionRateLimiter(2, Duration.ofMinutes(1), clock);
+        start(null);
+        Session root = login("root");
+        Map<String, String> form = testForm("probe", "probe.example.invalid", "action", "test");
+        assertEquals(200, post("/admin/endpoints/new", root, form).statusCode());
+        clock.now = clock.now.plusSeconds(10);
+        // An invalid form counts too: validation already runs the plugin.
+        assertEquals(400, post("/admin/endpoints/new", root,
+                testForm("probe", "bad", "action", "test")).statusCode());
+        HttpResponse<String> r = post("/admin/endpoints/new", root, form);
+        assertEquals(429, r.statusCode());
+        assertEquals("50", r.headers().firstValue("Retry-After").orElseThrow());
+        assertTrue(r.body().contains("Too many tests. Try again in 50 s."));
+        assertTrue(field(withoutTemplates(r.body()), "host").contains("value=\"probe.example.invalid\""));
+        assertEquals(1, CHECKS.get());
+
+        // Per user: someone else can still test.
+        assertEquals(200, post("/admin/endpoints/new", login("ada"), form).statusCode());
+        assertEquals(2, CHECKS.get());
+        // Saving isn't limited.
+        assertEquals(303, post("/admin/endpoints/new", root, testForm("probe", "probe.example.invalid")).statusCode());
+        // Once the first test leaves the window, one more is allowed.
+        clock.now = clock.now.plusSeconds(50);
+        assertEquals(200, post("/admin/endpoints/probe", root, testForm("probe", "probe.example.invalid",
+                "action", "test", "version", "1")).statusCode());
+        assertEquals(429, post("/admin/endpoints/probe", root, testForm("probe", "probe.example.invalid",
+                "action", "test", "version", "1")).statusCode());
+        assertEquals(3, CHECKS.get());
     }
 
     @Test

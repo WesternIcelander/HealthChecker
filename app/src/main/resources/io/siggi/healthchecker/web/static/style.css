@@ -720,3 +720,14 @@ h2.day-title { font-size: 1.4rem; }
 .ee-check { font-weight: normal; }
 .ee-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
 .ee-actions [hidden], .ee-type-row [hidden] { display: none; }
+.ee-test-result {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--up);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.ee-test-result.ee-test-fail { border-left-color: var(--down); }
+.ee-test-result h3 { margin: 0 0 4px; font-size: 1rem; }
+.ee-test-result p { margin: 4px 0 0; }
