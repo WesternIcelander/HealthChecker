@@ -1097,7 +1097,7 @@ test list are build, docs or manual steps.
 
 ### M12 — Scheduled maintenance
 - [x] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
-- [ ] Recurrence: daily / weekly / monthly rules with `until`, DST-safe expansion in the configured timezone, skip/edit single occurrence, materialise occurrences when they start. **Tests:** weekly recurrence across a DST change keeps local time; "first Sunday" monthly; skip and edit one occurrence; editing a series doesn't change past occurrences.
+- [x] Recurrence: daily / weekly / monthly rules with `until`, DST-safe expansion in the configured timezone, skip/edit single occurrence, materialise occurrences when they start. **Tests:** weekly recurrence across a DST change keeps local time; "first Sunday" monthly; skip and edit one occurrence; editing a series doesn't change past occurrences.
 - [ ] `MaintenanceScheduler`: start/end transitions; "End now" and "Extend"; affected endpoints show state `MAINTENANCE`. History integration: DOWN during a window → `kind: maintenance` event; split at window end into a normal `outage`; uptime excludes maintenance downtime unless `countsAsDowntime`. **Tests:** with a fake clock: transitions; end now; extend; down inside window → maintenance event, no outage; down past window end → outage starting at window end; uptime with and without `countsAsDowntime`.
 - [ ] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
 
@@ -1697,3 +1697,25 @@ them; see CLAUDE.md.
   `Actor` (user id, display name): `maintenance.create` / `.edit` / `.cancel` (id = window; the window without notes),
   `maintenance.note.add` / `.edit` / `.delete` (`{window}/{note}`; the note as for events). The store isn't wired into
   `run` yet; that comes with the scheduler and dashboard steps, which supply `References` (endpoint store, channels).
+- Recurrence (app, package `maintenance`: `Recurrence`, `OccurrenceChange`): a window with `recurrence` is a series.
+  Rules: `daily`, `weekly` (weekdays), `monthly` by `dayOfMonth` (1–31, months without it skipped) or by `week` (1–5,
+  -1 = last; months without a 5th skipped) + `weekday`; optional inclusive `until` date; no "every N" interval. The
+  series' `start`/`end` are its first possible occurrence; the rule picks dates from that date on (the first date
+  needn't match it), each occurrence at the same local start time and local length in the configured timezone (a time
+  in the spring gap moves forward by the gap; absolute length if the local one would be ≤ 0). An occurrence is
+  `{seriesId}_{date}`. Validation: rule complete, `until` not before the first date, at least one occurrence, and an
+  occurrence no longer than the rule's smallest gap (daily 1 day, weekly the closest weekdays, monthly 28 days) so
+  they never overlap. A window can't become a series or back after creation. A series is never in progress itself
+  (status `scheduled` or `cancelled`); it can be cancelled at any time, which stops future occurrences only. Its
+  times may only change to a first occurrence in the future; title, services, channels and rule can change anytime.
+- Single occurrences (`skipOccurrence` / `editOccurrence` / `restoreOccurrence`, each naming the series `version` and
+  bumping it): an edit sets its own title, description, start and end (rules of a new window); services and channels
+  follow the series. Only occurrences that haven't started can be changed. Stored on the series as `exceptions`
+  (`{"date", "skip": true}` or `{"date", "title", "description"?, "start", "end"}`); audited as
+  `maintenance.occurrence.skip` / `.edit` / `.restore` with id `{series}/{date}`.
+- Materialising: an occurrence is stored as its own window (`seriesId`, `occurrence`, id `{seriesId}_{date}`, version
+  1, no notes) once it has started, via `MaintenanceStore.materialise()` (for the scheduler) and at the start of
+  every store write. So everything of a series that started is stored whenever the series is written, and a series
+  only yields occurrences starting after its `updatedAt`: rule or time edits never create or change past
+  occurrences. Materialising isn't audited (no user action). `occurrences(from, to)` lists stored windows plus
+  not-yet-stored occurrences; `occurrence(id)` finds either. The store takes the configured `ZoneId`.
