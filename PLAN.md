@@ -1102,7 +1102,7 @@ test list are build, docs or manual steps.
 - [x] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
 
 ### M13 — OIDC / OAuth 2.0 login
-- [ ] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
+- [x] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
 - [ ] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
 - [ ] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
 - [ ] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
@@ -1776,3 +1776,22 @@ them; see CLAUDE.md.
   start with `id`, `title`, `description`?, `status` (`scheduled`/`in_progress`/`completed`/`cancelled`), `start`, `end`,
   `series`, `seriesId`/`occurrence` for occurrences and `affected` `[{id, name}]`; `/api/maintenance/{id}` (one-off,
   occurrence or series) adds the visible `notes`.
+- OIDC/OAuth providers (app, `auth.ProviderConfig`, `auth.AuthProviders`): `id` uses the user-id pattern
+  `[a-z0-9][a-z0-9._-]{0,63}` (so never a `:`), unique; `type` is `oidc` or `oauth2`; keys are checked per type
+  (unknown-key errors, e.g. `identifyBy` on `oauth2` or `idField` on `oidc`). Common: `label` (default the id, ≤ 100
+  characters), `clientId` (required), `clientSecret` (optional, for public clients), `scopes` (deduplicated; `oidc`
+  default `openid email profile` and must include `openid`; `oauth2` default none), `sites` (non-empty list of hosts
+  exactly as listed in some site's `hosts`, case-insensitive; the provider is offered only on the sites owning those
+  hosts and never on the default site). `oidc`: `issuer` (kept exactly as written, since `iss` must equal it; no query
+  or fragment) and `identifyBy` (default `sub`). `oauth2`: `authorizeUrl`, `tokenUrl`, `userinfoUrl` (query allowed),
+  `idField` (required, a top-level userinfo field), `nameField` (optional) and `pkce` (default `true`; `oidc` always
+  uses PKCE). Claim/field names are 1–256 printable characters without spaces. All provider URLs must be https, except
+  `localhost`/`*.localhost`/`127.x.x.x`/`[::1]` (checked without DNS), with no credentials and no fragment. Every site
+  a provider is offered on needs a callback base URL: the site's `publicBaseUrl`, else `server.publicBaseUrl`; an
+  unrestricted provider also needs `server.publicBaseUrl` unless `unknownHosts` is `reject`. A provider that no user
+  identity and no rule's `provider` mentions is a warning. `run` reports these with the other configuration errors.
+  Identifier construction (`ProviderConfig.identify`): `oidc` takes the `identifyBy` claim, and for `email` only when
+  `email_verified` is `true` (boolean, or the string `"true"`, which some providers send); `oauth2` takes `idField`. A
+  value must be a string or a whole number (written without decimals, e.g. GitHub's `id`), non-empty, at most 512
+  characters and without control characters; otherwise there is no identifier (sign-in fails). The identifier is
+  `{providerId}:{value}`, value unchanged (no case folding).

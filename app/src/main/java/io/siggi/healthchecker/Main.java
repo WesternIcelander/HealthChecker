@@ -1,6 +1,7 @@
 package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
+import io.siggi.healthchecker.auth.AuthProviders;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -119,6 +120,9 @@ public final class Main {
             }
             LocalLogin.enabled(config.auth(), endpointErrors);
             UserDirectory.parse(config.auth(), endpointErrors);
+            List<String> authWarnings = new java.util.ArrayList<>();
+            AuthProviders.parse(config.auth(), config.server(), config.sites(), endpointErrors, authWarnings);
+            printWarnings(authWarnings, err);
             if (!endpointErrors.isEmpty()) {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
                 return EXIT_ERROR;

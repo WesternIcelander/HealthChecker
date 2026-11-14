@@ -1,5 +1,6 @@
 package io.siggi.healthchecker.config;
 
+import io.siggi.healthchecker.auth.AuthProviders;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.auth.UserDirectory;
@@ -55,7 +56,11 @@ class ExampleConfigTest {
         List<String> errors = new ArrayList<>();
         UserDirectory users = UserDirectory.parse(config.auth(), errors);
         LocalLogin.enabled(config.auth(), errors);
+        List<String> warnings = new ArrayList<>();
+        AuthProviders providers = AuthProviders.parse(config.auth(), config.server(), config.sites(), errors, warnings);
         assertEquals(List.of(), errors);
+        assertEquals(List.of(), warnings);
+        assertEquals(2, providers.providers().size());
         assertFalse(users.users().isEmpty());
         assertTrue(users.roles().containsKey("ops"));
     }
