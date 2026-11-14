@@ -1056,7 +1056,7 @@ test list are build, docs or manual steps.
 
 ### M6 — Public main page & status API
 - [x] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
-- [ ] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
+- [x] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
 - [ ] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
 - [ ] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
 - [ ] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
@@ -1301,3 +1301,16 @@ them; see CLAUDE.md.
   hop is the client). HTTPS = the nearest (last) `X-Forwarded-Proto` entry from a trusted peer is
   `https`, since HealthChecker never terminates TLS itself. SiggiHTTP's own trusted list is narrowed
   from its private-range defaults to the configured proxies.
+- `ViewFilter` (app, package `web.view`): builds `EndpointView` / `CheckView` / `EventView` / `NoteView`
+  records from an `Endpoint`, its `EndpointStatus`, `CheckRecord`s and `HistoryEvent`s for a `Viewer`
+  (user name + `view.private`); a field the viewer may not see is `null`. Uptime and day summaries
+  aren't part of the views (callers compute them for visible endpoints only). Without `view.private`,
+  logged in or not: `public-status` shows id, name, state, `since`, recent checks as time + pass/fail
+  (no `last` check), and events with title (custom or `"{name} outage"`), kind, start, end and public
+  notes (author and timestamps included); `public` adds `type`, the last check, latency, message,
+  details and event failure messages, leak-filtered. Never for those viewers: targets, visibility,
+  `notify`/`reminders`, the custom-title flag, `endedUnobserved`/`endedByConfigChange`,
+  `maintenanceId` (M12 decides what maintenance links anonymous visitors get) and note visibility.
+  The leak filter compares case-insensitively and checks message text, each detail's key and value
+  (`String.valueOf`) and failure messages against every non-empty declared target value; a match drops
+  that item only.
