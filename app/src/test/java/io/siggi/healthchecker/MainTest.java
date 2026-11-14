@@ -94,6 +94,28 @@ class MainTest {
     }
 
     @Test
+    void runRejectsAnEndpointIdDefinedInConfigAndDashboard(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("config.json");
+        Path data = dir.resolve("data");
+        Files.createDirectories(data);
+        Files.writeString(data.resolve("endpoints.json"), """
+                { "version": 1, "endpoints": [ { "id": "site", "name": "Site 2", "type": "http",
+                  "url": "http://127.0.0.1:1", "maxClass": 2 } ] }
+                """);
+        Files.writeString(config, """
+                { "server": { "port": %d, "bind": "127.0.0.1" }, "dataDir": "%s",
+                  "plugins": { "dir": "%s" },
+                  "endpoints": [ { "id": "site", "name": "Site", "type": "http",
+                                   "url": "http://127.0.0.1:1", "maxClass": 2 } ] }
+                """.formatted(freePort(), json(data), json(dir.resolve("plugins"))));
+        assertEquals(Main.EXIT_ERROR, execute("run", config.toString()));
+        String errText = errBytes.toString(StandardCharsets.UTF_8);
+        assertTrue(errText.contains("1 configuration error:"), errText);
+        assertTrue(errText.contains("endpoints[0] \"site\": endpoint id \"site\" is defined in both config.json and "),
+                errText);
+    }
+
+    @Test
     void runReportsConfigErrors(@TempDir Path dir) throws Exception {
         Path config = dir.resolve("bad.json");
         Files.writeString(config, "{\"timezone\": \"Nowhere/Nothing\", \"nope\": 1}");

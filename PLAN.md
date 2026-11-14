@@ -1087,7 +1087,7 @@ test list are build, docs or manual steps.
 - [x] Notes: add / edit / delete; public/private toggle; author and timestamps; length limit; forms in list view, event page and day popover; all POST + CSRF; persisted before responding. **Tests:** private note hidden from anonymous in HTML and JSON; edits survive restart; HTML escaping of note text; length limit.
 
 ### M11 — Endpoint & category management in the dashboard
-- [ ] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
+- [x] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
 - [ ] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
 - [ ] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
 - [ ] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
@@ -1552,3 +1552,20 @@ them; see CLAUDE.md.
   list view, on the permalink page and in the day details (day page, `?day=` panel and popover, which return to
   `?day={date}`); `app.js` asks before deleting (`data-confirm`) and opens the event's `<details>` for an
   `#event-`/`#note-` fragment. The audit entry comes with `AuditLog` (M11).
+- `EndpointStore` (app, package `config`): `{dataDir}/endpoints.json` is `{"version", "categories": [{"id", "name",
+  "description"?}], "endpoints": [...]}`; endpoint entries have the same keys as in `config.json` and are stored as
+  entered (no `${env:…}` substitution), so `defaults` apply to whatever they leave out. Both are parsed by the same
+  `ConfigLoader` code (`parseEndpoint` / `parseCategory`) and plugin validation (`PluginManager.validate`). Errors at
+  startup, all reported together and naming the file: bad JSON, unknown root keys, a bad `version`, an endpoint entry
+  without a valid id, an id repeated in the file, any endpoint or category id defined in both sources, and an invalid
+  dashboard category (no plugin involved, so only hand edits can break one). Every other problem of a dashboard endpoint
+  (unknown type, plugin rejection, unknown category or channel, a name also used elsewhere, …) loads it **disabled**: kept
+  with its errors (startup warning), not checked, and written back unchanged by later saves; showing it to logged-in
+  users comes with the endpoint editor. Merged order: config entries first, then the file's. Writes (`putEndpoint`,
+  `removeEndpoint`, `putCategory`, `removeCategory`) take the version they're based on (`VersionConflictException`, for
+  `409`, otherwise), validate first (`InvalidEntryException` with `key: message` errors; config-defined ids are
+  read-only), then write the next version with `AtomicFiles`; leftover `.endpoints.json.*.tmp` files are removed at
+  load. Removing a dashboard category also drops `category` from its dashboard endpoints in the same write (they go to
+  "Other"). Config endpoints may only use config categories (config validation doesn't see the file). `run` loads the
+  store after validating the config's endpoints and checks the merged, enabled endpoints; layout and pages use the
+  merged lists. Live application of later edits comes with the "Save applies live" step.

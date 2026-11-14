@@ -8,6 +8,7 @@ import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.ConfigLoadException;
 import io.siggi.healthchecker.config.ConfigLoader;
+import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.plugin.PluginLoadException;
 import io.siggi.healthchecker.plugin.PluginManager;
@@ -122,6 +123,18 @@ public final class Main {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
                 return EXIT_ERROR;
             }
+            EndpointStore endpoints;
+            try {
+                endpoints = EndpointStore.load(config, plugins::validate);
+            } catch (ConfigLoadException e) {
+                printWarnings(e.warnings(), err);
+                err.println(e.getMessage());
+                return EXIT_ERROR;
+            } catch (IOException e) {
+                err.println("Couldn't load dashboard endpoints: " + e.getMessage());
+                return EXIT_ERROR;
+            }
+            printWarnings(endpoints.warnings(), err);
             HistoryStore history;
             try {
                 history = HistoryStore.open(config.dataDir());
@@ -132,9 +145,15 @@ public final class Main {
             out.println("Loaded history of " + history.endpointIds().size() + " endpoint(s) from " + config.dataDir());
             out.println("Loaded " + configFile + ": " + config.endpoints().size() + " endpoint(s), "
                     + config.categories().size() + " categor" + (config.categories().size() == 1 ? "y" : "ies") + ".");
+            int dashboardEndpoints = endpoints.endpoints().size() - config.endpoints().size();
+            int dashboardCategories = endpoints.categories().size() - config.categories().size();
+            if (dashboardEndpoints > 0 || dashboardCategories > 0) {
+                out.println("Loaded " + endpoints.file() + ": " + dashboardEndpoints + " endpoint(s), "
+                        + dashboardCategories + " categor" + (dashboardCategories == 1 ? "y" : "ies") + ".");
+            }
             Daemon daemon;
             try {
-                daemon = Daemon.start(config, plugins, history);
+                daemon = Daemon.start(config, plugins, endpoints, history);
             } catch (IOException | ConfigException e) {
                 err.println("Couldn't start: " + e.getMessage());
                 return EXIT_ERROR;

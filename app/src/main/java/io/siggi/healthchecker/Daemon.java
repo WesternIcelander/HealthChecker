@@ -8,6 +8,7 @@ import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.EndpointDefinition;
+import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.UptimeCalculator;
 import io.siggi.healthchecker.plugin.PluginManager;
@@ -46,8 +47,12 @@ final class Daemon implements AutoCloseable {
     private final CountDownLatch closed = new CountDownLatch(1);
     private boolean closing;
 
-    private Daemon(Config config, PluginManager plugins, HistoryStore history) throws IOException {
+    private final EndpointStore endpoints;
+
+    private Daemon(Config config, PluginManager plugins, EndpointStore endpoints, HistoryStore history)
+            throws IOException {
         this.history = history;
+        this.endpoints = endpoints;
         Clock clock = Clock.systemUTC();
         registry = new EndpointRegistry(new EndpointFactory(plugins));
         scheduler = new CheckScheduler(registry, status);
@@ -75,12 +80,12 @@ final class Daemon implements AutoCloseable {
                 new LocalLogin(LocalLogin.enabled(config.auth()), users.credentials(), new LoginRateLimiter()),
                 web.trustedProxies()).register(web);
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
-                config::categories, config::endpoints);
+                endpoints::categoryConfigs, endpoints::definitions);
         layoutEditor.register(web);
         new StatusPage(sites, layoutEditor::layout,
                 registry::get, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor)
                 .register(web);
-        new ServicePage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
+        new ServicePage(sites, () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
                 registry::get, status::status, permissions::viewer, uptime, history, clock,
                 config.dashboard(), new EventEditor(permissions, sessions, history)).register(web);
     }
@@ -89,18 +94,20 @@ final class Daemon implements AutoCloseable {
      * Builds everything, adds the configured endpoints, starts checking and listening.
      * On failure, whatever was started is stopped again.
      *
-     * @param history loaded history; closed by {@link #close()}
+     * @param endpoints the merged endpoints and categories; disabled endpoints aren't checked
+     * @param history   loaded history; closed by {@link #close()}
      */
-    static Daemon start(Config config, PluginManager plugins, HistoryStore history) throws IOException, ConfigException {
+    static Daemon start(Config config, PluginManager plugins, EndpointStore endpoints, HistoryStore history)
+            throws IOException, ConfigException {
         Daemon daemon;
         try {
-            daemon = new Daemon(config, plugins, history);
+            daemon = new Daemon(config, plugins, endpoints, history);
         } catch (IOException | RuntimeException e) {
             history.close();
             throw e;
         }
         try {
-            for (EndpointDefinition definition : config.endpoints()) {
+            for (EndpointDefinition definition : daemon.endpoints.definitions()) {
                 daemon.registry.add(definition);
             }
             daemon.history.startHeartbeat();

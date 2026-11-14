@@ -113,6 +113,45 @@ public final class ConfigLoader {
         return config;
     }
 
+    /**
+     * The result of parsing one entry outside {@code config.json} with the same rules.
+     *
+     * @param value  the parsed entry, or {@code null} if there are errors
+     * @param errors the problems, each prefixed with the entry's path
+     */
+    public record EntryResult<T>(T value, List<String> errors) {
+        public EntryResult {
+            errors = List.copyOf(errors);
+        }
+    }
+
+    /**
+     * Parses one endpoint entry (e.g. from {@code data/endpoints.json}) with the same rules as
+     * {@code config.json} entries. No {@code ${env:…}} substitution is done.
+     *
+     * @param path        prefix for error messages; empty for bare setting keys
+     * @param categoryIds the known category ids
+     * @param channels    the configured notification channel names
+     * @param namesInUse  names of other endpoints → a description of who uses them
+     */
+    public static EntryResult<EndpointDefinition> parseEndpoint(JsonObject entry, String path, EndpointDefaults defaults,
+                                                               Set<String> categoryIds, Set<String> channels,
+                                                               Map<String, String> namesInUse) {
+        Problems problems = new Problems();
+        Parser parser = new ConfigLoader(name -> null, ZoneId.of("UTC")).new Parser(null, problems);
+        EndpointDefinition definition = parser.endpoint(new Section(entry, path, problems), defaults, categoryIds,
+                channels, new HashSet<>(), new HashMap<>(namesInUse));
+        return new EntryResult<>(definition, problems.errors);
+    }
+
+    /** Parses one category entry with the same rules as {@code config.json} entries. */
+    public static EntryResult<CategoryConfig> parseCategory(JsonObject entry, String path) {
+        Problems problems = new Problems();
+        Parser parser = new ConfigLoader(name -> null, ZoneId.of("UTC")).new Parser(null, problems);
+        CategoryConfig category = parser.category(new Section(entry, path, problems));
+        return new EntryResult<>(problems.errors.isEmpty() ? category : null, problems.errors);
+    }
+
     private final class Parser {
         private final Section root;
         private final Problems problems;
@@ -377,17 +416,13 @@ public final class ConfigLoader {
                 }
                 JsonObject obj = arr.get(i).getAsJsonObject();
                 Section s = new Section(obj, labelled(basePath, obj), problems);
-                String id = id(s);
-                String name = s.requiredString("name");
-                String description = s.string("description", null);
-                s.rejectUnknownKeys();
-                if (id != null && !seen.add(id)) {
-                    s.error("id", "duplicate category id \"" + id + "\"");
+                CategoryConfig category = category(s);
+                if (category == null) continue;
+                if (!seen.add(category.id())) {
+                    s.error("id", "duplicate category id \"" + category.id() + "\"");
                     continue;
                 }
-                if (id != null && name != null) {
-                    out.add(new CategoryConfig(id, name, description));
-                }
+                out.add(category);
             }
             return out;
         }
@@ -424,49 +459,73 @@ public final class ConfigLoader {
                 }
                 JsonObject obj = arr.get(i).getAsJsonObject();
                 Section s = new Section(obj, labelled(basePath, obj), problems);
-                int errorsBefore = problems.errors.size();
-
-                String id = id(s);
-                if (id != null && !ids.add(id)) {
-                    s.error("id", "duplicate endpoint id \"" + id + "\"");
-                }
-                String name = s.requiredString("name");
-                if (name != null) {
-                    String previous = names.putIfAbsent(name, s.path);
-                    if (previous != null) {
-                        s.error("name", "duplicate endpoint name \"" + name + "\" (also used by " + previous + ")");
-                    }
-                }
-                String type = s.requiredString("type");
-                if (type != null && !ID.matcher(type).matches()) {
-                    s.error("type", "\"" + type + "\" must match [a-z0-9-]+");
-                }
-                String category = s.string("category", null);
-                if (category != null && !categoryIds.contains(category)) {
-                    s.error("category", "unknown category \"" + category + "\" (configured: "
-                            + (categoryIds.isEmpty() ? "none" : String.join(", ", new TreeSet<>(categoryIds))) + ")");
-                }
-                Visibility visibility = visibility(s, d.visibility());
-                int interval = s.integer("intervalSeconds", d.intervalSeconds(), 1, MAX_INTERVAL_SECONDS);
-                int timeout = s.integer("timeoutMillis", d.timeoutMillis(), MIN_TIMEOUT_MILLIS, MAX_TIMEOUT_MILLIS);
-                int threshold = s.integer("failureThreshold", d.failureThreshold(), 1, MAX_FAILURE_THRESHOLD);
-                List<String> notify = notify(s, channels);
-                List<Integer> reminders = reminders(s);
-                int repeat = s.integer("reminderRepeatMinutes", d.reminderRepeatMinutes(), 0, MAX_REMINDER_MINUTES);
-
-                JsonObject settings = new JsonObject();
-                for (var entry : obj.entrySet()) {
-                    if (!COMMON_ENDPOINT_KEYS.contains(entry.getKey())) {
-                        settings.add(entry.getKey(), entry.getValue().deepCopy());
-                    }
-                }
-                if (problems.errors.size() == errorsBefore) {
-                    out.add(new EndpointDefinition(id, name, type, category, visibility, interval, timeout,
-                            threshold, notify == null ? d.notifyChannels() : notify,
-                            reminders == null ? d.reminders() : reminders, repeat, settings));
+                EndpointDefinition definition = endpoint(s, d, categoryIds, channels, ids, names);
+                if (definition != null) {
+                    out.add(definition);
                 }
             }
             return out;
+        }
+
+        /**
+         * Parses one endpoint entry. Its id is added to {@code ids} and its name to {@code names}
+         * (name → path of the entry using it), reporting duplicates.
+         *
+         * @return the definition, or {@code null} if the entry has errors
+         */
+        EndpointDefinition endpoint(Section s, EndpointDefaults d, Set<String> categoryIds, Set<String> channels,
+                                    Set<String> ids, Map<String, String> names) {
+            JsonObject obj = s.obj;
+            int errorsBefore = problems.errors.size();
+
+            String id = id(s);
+            if (id != null && !ids.add(id)) {
+                s.error("id", "duplicate endpoint id \"" + id + "\"");
+            }
+            String name = s.requiredString("name");
+            if (name != null) {
+                String previous = names.putIfAbsent(name, s.path);
+                if (previous != null) {
+                    s.error("name", "duplicate endpoint name \"" + name + "\" (also used by " + previous + ")");
+                }
+            }
+            String type = s.requiredString("type");
+            if (type != null && !ID.matcher(type).matches()) {
+                s.error("type", "\"" + type + "\" must match [a-z0-9-]+");
+            }
+            String category = s.string("category", null);
+            if (category != null && !categoryIds.contains(category)) {
+                s.error("category", "unknown category \"" + category + "\" (configured: "
+                        + (categoryIds.isEmpty() ? "none" : String.join(", ", new TreeSet<>(categoryIds))) + ")");
+            }
+            Visibility visibility = visibility(s, d.visibility());
+            int interval = s.integer("intervalSeconds", d.intervalSeconds(), 1, MAX_INTERVAL_SECONDS);
+            int timeout = s.integer("timeoutMillis", d.timeoutMillis(), MIN_TIMEOUT_MILLIS, MAX_TIMEOUT_MILLIS);
+            int threshold = s.integer("failureThreshold", d.failureThreshold(), 1, MAX_FAILURE_THRESHOLD);
+            List<String> notify = notify(s, channels);
+            List<Integer> reminders = reminders(s);
+            int repeat = s.integer("reminderRepeatMinutes", d.reminderRepeatMinutes(), 0, MAX_REMINDER_MINUTES);
+
+            JsonObject settings = new JsonObject();
+            for (var entry : obj.entrySet()) {
+                if (!COMMON_ENDPOINT_KEYS.contains(entry.getKey())) {
+                    settings.add(entry.getKey(), entry.getValue().deepCopy());
+                }
+            }
+            if (problems.errors.size() != errorsBefore) {
+                return null;
+            }
+            return new EndpointDefinition(id, name, type, category, visibility, interval, timeout,
+                    threshold, notify == null ? d.notifyChannels() : notify,
+                    reminders == null ? d.reminders() : reminders, repeat, settings);
+        }
+
+        CategoryConfig category(Section s) {
+            String id = id(s);
+            String name = s.requiredString("name");
+            String description = s.string("description", null);
+            s.rejectUnknownKeys();
+            return id != null && name != null ? new CategoryConfig(id, name, description) : null;
         }
 
         private void warnEmptyCategories(List<CategoryConfig> categories, List<EndpointDefinition> endpoints) {

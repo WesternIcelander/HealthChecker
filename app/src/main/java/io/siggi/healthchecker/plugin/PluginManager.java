@@ -224,32 +224,43 @@ public final class PluginManager implements AutoCloseable {
         List<String> errors = new ArrayList<>();
         for (int i = 0; i < endpoints.size(); i++) {
             EndpointDefinition e = endpoints.get(i);
-            String prefix = "endpoints[" + i + "] \"" + e.id() + "\": ";
             try {
-                CheckPlugin plugin = require(e.type());
-                JsonEndpointConfig config = new JsonEndpointConfig(e.id(), e.name(), e.settings());
-                Checker checker = plugin.create(config);
-                try {
-                    config.checkNoUnreadKeys();
-                } finally {
-                    if (checker != null) {
-                        try {
-                            checker.close();
-                        } catch (Exception ignored) {
-                            // a validation-only checker; nothing to report
-                        }
-                    }
-                }
-                if (checker == null) {
-                    errors.add(prefix + "plugin \"" + e.type() + "\" returned no checker");
-                }
+                validate(e);
             } catch (ConfigException ex) {
-                errors.add(prefix + ex.getMessage());
-            } catch (RuntimeException | LinkageError ex) {
-                errors.add(prefix + "plugin \"" + e.type() + "\" failed: " + ex);
+                errors.add("endpoints[" + i + "] \"" + e.id() + "\": " + ex.getMessage());
             }
         }
         return errors;
+    }
+
+    /**
+     * Validates one endpoint against its plugin, like {@link #validateEndpoints}.
+     *
+     * @throws ConfigException describing the first problem
+     */
+    public void validate(EndpointDefinition e) throws ConfigException {
+        CheckPlugin plugin = require(e.type());
+        JsonEndpointConfig config = new JsonEndpointConfig(e.id(), e.name(), e.settings());
+        Checker checker;
+        try {
+            checker = plugin.create(config);
+        } catch (RuntimeException | LinkageError ex) {
+            throw new ConfigException("plugin \"" + e.type() + "\" failed: " + ex);
+        }
+        try {
+            config.checkNoUnreadKeys();
+        } finally {
+            if (checker != null) {
+                try {
+                    checker.close();
+                } catch (Exception | LinkageError ignored) {
+                    // a validation-only checker; nothing to report
+                }
+            }
+        }
+        if (checker == null) {
+            throw new ConfigException("plugin \"" + e.type() + "\" returned no checker");
+        }
     }
 
     /** Closes the plugin jars' class loaders. Only call once no plugin code runs any more. */
