@@ -257,6 +257,77 @@ main {
 .check-pass { background: var(--up); }
 .check-fail { background: var(--down); }
 
+/* ---- event list and event page ---- */
+
+.events { margin-top: 28px; }
+.events-title { margin: 0 0 6px; font-size: 1rem; }
+
+.events-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.event { min-width: 0; }
+.event + .event { border-top: 1px solid var(--border); }
+.event summary { padding: 10px 14px; cursor: pointer; }
+.event summary:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.event-title { font-weight: 600; overflow-wrap: anywhere; }
+
+.event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  padding-left: 1.1em;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-ongoing .event-end { color: var(--down); font-weight: 600; }
+.event-body { padding: 0 14px 12px calc(14px + 1.1em); }
+.event-link { margin: 8px 0 0; font-size: 0.9rem; }
+.event-flag { margin: 0 0 8px; font-size: 0.9rem; }
+
+.notes { list-style: none; margin: 0; padding: 0; }
+.note { padding: 8px 10px; border-radius: 6px; background: var(--surface); }
+.note + .note { margin-top: 6px; }
+.note-meta { margin: 0; color: var(--muted); font-size: 0.8rem; }
+.note-author { color: var(--fg); font-weight: 600; }
+.note-text { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notes-empty { margin: 0; font-size: 0.9rem; }
+.notes-title { margin: 20px 0 6px; font-size: 1rem; }
+
+.badge {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.badge-private { border-color: var(--degraded-orange); color: var(--degraded-orange); }
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 0;
+  font-size: 0.9rem;
+}
+
+.event-page-title { margin: 0 0 12px; font-size: 1.4rem; overflow-wrap: anywhere; }
+.fact-first-failure, .fact-last-failure { grid-column: 1 / -1; }
+
+@media (max-width: 480px) {
+  .event summary { padding: 10px; }
+  .event-body { padding: 0 10px 10px; }
+  .event-meta { padding-left: 0; }
+}
+
 /* ---- tooltip (app.js) ---- */
 
 .tooltip {

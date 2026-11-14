@@ -1063,7 +1063,7 @@ test list are build, docs or manual steps.
 
 ### M7 — Service page: list & calendar views
 - [x] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
-- [ ] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
+- [x] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
 - [ ] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
 - [ ] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
 - [ ] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
@@ -1366,3 +1366,15 @@ them; see CLAUDE.md.
   `ViewFilter` provides: type, last check (time, pass/fail, latency, message, details) for `public` endpoints, plus
   visibility and targets for `view.private`. Times are shown as `yyyy-MM-dd HH:mm:ss` in the configured timezone.
   Check tooltips show time, pass/fail and, when visible, latency and message. The service page doesn't auto-refresh.
+- Service page list view (`web.page.ServicePage`, which now also takes the `HistoryStore` and a `Clock`): events sorted by
+  start, newest first (ties by id), 25 per page; `?page=N` is 0-based, anything that isn't a non-negative number means 0,
+  and a page past the last shows the last page. "← Newer" / "Older →" links (`rel="prev"`/`"next"`, to `#events`) and
+  "Page n of m" appear only with more than one page. Each event is a `<details>` whose summary shows title, start – end
+  (or "ongoing"), duration (`Durations.format`, ongoing ones up to now) and the number of notes the viewer can see; the
+  body shows the failure messages `ViewFilter` provides, how the event ended (`endedUnobserved` / `endedByConfigChange`,
+  privileged only), the visible notes (author, created/edited time, text with newlines kept via `white-space: pre-wrap`,
+  plus a public/private badge for privileged viewers only) and a permalink. Until the calendar view exists, any `?view=`
+  shows the list. Maintenance windows, the "Planned" badge and the filter come with M12; rename and note forms with M10.
+- Event permalink `/service/{id}/event/{eventId}`: the same `404` rules as the service page, plus `404` for an event id
+  not matching `[A-Za-z0-9-]{1,64}`, an unknown id, or an event of another endpoint. Shows the title, the service (link),
+  start, end, duration, failure messages and end flags as visible, and the notes.
