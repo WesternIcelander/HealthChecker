@@ -48,7 +48,12 @@ public final class NotificationDispatcher implements AutoCloseable {
     private final TaskScheduler scheduler;
     private final Clock clock;
     private final Logger logger;
+    /** No new notifications are accepted. */
     private volatile boolean closed;
+    /** Shutting down: pending batches get one more attempt each, failures aren't retried. */
+    private volatile boolean draining;
+    /** No more delivery attempts start. */
+    private volatile boolean stopped;
 
     /**
      * @param notifiers   channel name → its notifier
@@ -171,8 +176,88 @@ public final class NotificationDispatcher implements AutoCloseable {
     /** Stops timers and deliveries; anything still pending is dropped. */
     @Override
     public void close() {
-        closed = true;
+        close(Duration.ZERO);
+    }
+
+    /**
+     * Stops accepting notifications, then tries to deliver what is pending (on shutdown) for at
+     * most {@code flushTimeout}: open batch windows close at once, a batch waiting for a retry is
+     * tried now, and a failure is no longer retried. Whatever is still undelivered when the time is
+     * up is dropped (logged); a delivery still in progress then is abandoned. Blocks until done.
+     *
+     * @return {@code true} if nothing was left pending
+     */
+    public boolean close(Duration flushTimeout) {
+        Objects.requireNonNull(flushTimeout, "flushTimeout");
+        synchronized (channels) {
+            if (closed) {
+                return true;
+            }
+            closed = true;
+        }
+        boolean flushed = true;
+        if (flushTimeout.isPositive()) {
+            draining = true;
+            for (Channel ch : channels.values()) {
+                synchronized (ch) {
+                    if (ch.collecting != null) {
+                        ch.queue.add(new NotificationBatch(UUID.randomUUID(), ch.name, ch.collecting));
+                        ch.collecting = null;
+                    }
+                    int attempt = 1;
+                    if (ch.retryAttempt > 0) {
+                        attempt = ch.retryAttempt;
+                        ch.retryAttempt = 0;
+                        ch.retryToken++;
+                        ch.sending = false;
+                    }
+                    if (!ch.sending && !ch.queue.isEmpty()) {
+                        ch.sending = true;
+                        int first = attempt;
+                        scheduler.execute(() -> attempt(ch, first));
+                    }
+                }
+            }
+            long deadline = System.nanoTime() + flushTimeout.toNanos();
+            while (!idle()) {
+                if (System.nanoTime() - deadline >= 0) {
+                    break;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        stopped = true;
+        for (Channel ch : channels.values()) {
+            synchronized (ch) {
+                int pending = ch.collecting == null ? 0 : ch.collecting.size();
+                for (NotificationBatch batch : ch.queue) {
+                    pending += batch.notifications().size();
+                }
+                if (pending > 0) {
+                    flushed = false;
+                    logger.log(Level.WARNING, "Notification dispatcher closed, dropping " + pending
+                            + " undelivered notification(s) for channel " + ch.name);
+                }
+            }
+        }
         scheduler.close();
+        return flushed;
+    }
+
+    private boolean idle() {
+        for (Channel ch : channels.values()) {
+            synchronized (ch) {
+                if (ch.sending || !ch.queue.isEmpty() || ch.collecting != null) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // ---- internals -----------------------------------------------------------------------
@@ -185,6 +270,10 @@ public final class NotificationDispatcher implements AutoCloseable {
         /** Batches waiting; the head is the one being sent or retried. */
         final ArrayDeque<NotificationBatch> queue = new ArrayDeque<>();
         boolean sending;
+        /** The attempt number of a retry waiting for its timer, else 0. */
+        int retryAttempt;
+        /** Identifies the current retry timer; a timer whose token is outdated does nothing. */
+        long retryToken;
         Instant lastSuccess;
         Instant lastErrorTime;
         String lastError;
@@ -225,7 +314,10 @@ public final class NotificationDispatcher implements AutoCloseable {
     }
 
     private void attempt(Channel ch, int attempt) {
-        if (closed) {
+        if (stopped) {
+            synchronized (ch) {
+                ch.sending = false;
+            }
             return;
         }
         NotificationBatch batch;
@@ -257,10 +349,11 @@ public final class NotificationDispatcher implements AutoCloseable {
             }
             ch.lastErrorTime = now;
             ch.lastError = failure.getMessage();
-            boolean giveUp = failure.permanent() || attempt >= retry.maxAttempts();
+            boolean giveUp = failure.permanent() || attempt >= retry.maxAttempts() || draining;
             if (giveUp) {
                 logger.log(Level.ERROR, "Notification to channel " + ch.name + " failed"
-                        + (failure.permanent() ? " permanently" : " after " + attempt + " attempts")
+                        + (failure.permanent() ? " permanently"
+                        : draining ? " while shutting down (not retried)" : " after " + attempt + " attempts")
                         + ", giving up (" + batch.notifications().size() + " notification(s)): "
                         + failure.getMessage());
                 ch.queue.poll();
@@ -273,15 +366,32 @@ public final class NotificationDispatcher implements AutoCloseable {
             }
             logger.log(Level.WARNING, "Notification to channel " + ch.name + " failed (attempt " + attempt
                     + "), retrying in " + delay.toMillis() + " ms: " + failure.getMessage());
-            if (!closed) {
-                scheduler.schedule(() -> attempt(ch, attempt + 1), delay);
+            if (!stopped) {
+                ch.retryAttempt = attempt + 1;
+                long token = ++ch.retryToken;
+                scheduler.schedule(() -> retry(ch, token), delay);
+            } else {
+                ch.sending = false;
             }
         }
     }
 
+    /** Runs a retry whose timer fired, unless shutdown has already started it or the token is outdated. */
+    private void retry(Channel ch, long token) {
+        int attempt;
+        synchronized (ch) {
+            if (ch.retryToken != token || ch.retryAttempt == 0) {
+                return;
+            }
+            attempt = ch.retryAttempt;
+            ch.retryAttempt = 0;
+        }
+        attempt(ch, attempt);
+    }
+
     /** Starts the next queued batch, or marks the channel idle. Holds the channel's lock. */
     private void next(Channel ch) {
-        if (ch.queue.isEmpty() || closed) {
+        if (ch.queue.isEmpty() || stopped) {
             ch.sending = false;
         } else {
             scheduler.execute(() -> attempt(ch, 1));

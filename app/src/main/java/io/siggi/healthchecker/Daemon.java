@@ -87,8 +87,12 @@ final class Daemon implements AutoCloseable {
     private final OutageAlerts alerts;
     private final SiteResolver sites;
     private final LayoutStore layout;
+    /** How long shutdown waits for pending notifications to be delivered. */
+    static final Duration NOTIFICATION_FLUSH_TIMEOUT = Duration.ofSeconds(10);
+
     private final CountDownLatch closed = new CountDownLatch(1);
     private boolean closing;
+    private volatile Duration notificationFlushTimeout = NOTIFICATION_FLUSH_TIMEOUT;
 
     private final EndpointStore endpoints;
 
@@ -400,25 +404,61 @@ final class Daemon implements AutoCloseable {
         closed.await();
     }
 
-    /** Stops listening, stops every check (closing the checkers) and writes a final history heartbeat. */
+    /** Changes how long {@link #close()} waits for pending notifications (tests). */
+    void notificationFlushTimeout(Duration timeout) {
+        notificationFlushTimeout = timeout;
+    }
+
+    /**
+     * Shuts down, bounded in time (the check grace period, plus the notification flush timeout,
+     * plus about a second for the web server): writes a final coverage heartbeat, stops the
+     * scheduler (in-flight checks get the grace period, then every checker is closed) and writes
+     * coverage up to that moment, delivers pending notifications for at most the flush timeout
+     * (dropping the rest), and finally stops the web server, which serves the dashboard until then.
+     * A second call (e.g. the shutdown hook racing {@code run}) waits for the first to finish.
+     */
     @Override
     public void close() {
+        boolean first;
         synchronized (this) {
-            if (closing) {
-                return;
-            }
+            first = !closing;
             closing = true;
         }
+        if (!first) {
+            try {
+                closed.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return;
+        }
         try {
-            web.close();
-            maintenanceScheduler.close();
-            scheduler.close();
-            reminders.close();
-            notifications.close();
-            uptime.close();
-            history.close();
+            // Coverage on disk up to now first, in case the rest of the shutdown is cut short.
+            runQuietly("history heartbeat", history::heartbeat);
+            runQuietly("maintenance scheduler", maintenanceScheduler::close);
+            runQuietly("check scheduler", scheduler::close);
+            // Stops the heartbeat thread and writes coverage up to the end of the last check.
+            runQuietly("history", history::close);
+            runQuietly("reminders", reminders::close);
+            runQuietly("notifications", () -> {
+                if (!notifications.close(notificationFlushTimeout)) {
+                    LOGGER.log(System.Logger.Level.WARNING,
+                            "Some notifications couldn't be delivered before shutdown");
+                }
+            });
+            runQuietly("web server", web::close);
+            runQuietly("uptime cache", uptime::close);
         } finally {
             closed.countDown();
+        }
+    }
+
+    /** Runs one shutdown step; a failing step is logged and doesn't stop the others. */
+    private static void runQuietly(String what, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException e) {
+            LOGGER.log(System.Logger.Level.ERROR, "Shutdown: closing the " + what + " failed", e);
         }
     }
 }

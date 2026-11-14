@@ -359,6 +359,74 @@ class NotificationDispatcherTest {
     }
 
     @Test
+    void closeWithFlushDeliversOpenWindowsAndWaitingRetries() throws Exception {
+        List<NotificationBatch> gotA = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<NotificationBatch> gotB = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.atomic.AtomicInteger bCalls = new java.util.concurrent.atomic.AtomicInteger();
+        Map<String, Notifier> notifiers = new LinkedHashMap<>();
+        notifiers.put("a", gotA::add);
+        notifiers.put("b", batch -> {
+            gotB.add(batch);
+            if (bCalls.incrementAndGet() == 1) throw new NotifierException("HTTP 503", false, null, null);
+        });
+        // A one-hour window and a one-hour backoff: without the flush nothing would go out for an hour.
+        NotificationDispatcher d = new NotificationDispatcher(notifiers, Duration.ofHours(1),
+                new RetryPolicy(Duration.ofHours(1), Duration.ofHours(1), 5), TaskScheduler.create(),
+                java.time.Clock.systemUTC(), new CapturingLogger(logLines));
+        d.sendNow("b", test(T0));
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (bCalls.get() < 1 && System.nanoTime() < deadline) Thread.sleep(5);
+        assertEquals(1, bCalls.get(), "first attempt failed, a retry waits");
+        d.send(List.of("a"), test(T0));
+        d.send(List.of("a"), test(T0));
+
+        long start = System.nanoTime();
+        assertTrue(d.close(Duration.ofSeconds(5)));
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofSeconds(4)) < 0);
+        assertEquals(1, gotA.size());
+        assertEquals(2, gotA.get(0).notifications().size());
+        assertEquals(2, gotB.size(), "the waiting retry was tried at once");
+        assertEquals(gotB.get(0).id(), gotB.get(1).id());
+        assertEquals(0, d.status("a").orElseThrow().pending());
+        d.send(List.of("a"), test(T0));
+        assertEquals(1, gotA.size(), "nothing accepted after close");
+    }
+
+    @Test
+    void closeWithFlushIsBoundedAndDropsTheRest() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger failing = new java.util.concurrent.atomic.AtomicInteger();
+        Map<String, Notifier> notifiers = new LinkedHashMap<>();
+        notifiers.put("a", batch -> {
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        notifiers.put("b", batch -> {
+            failing.incrementAndGet();
+            throw new NotifierException("HTTP 503", false, null, null);
+        });
+        NotificationDispatcher d = new NotificationDispatcher(notifiers, Duration.ofHours(1), RETRY,
+                TaskScheduler.create(), java.time.Clock.systemUTC(), new CapturingLogger(logLines));
+        try {
+            d.send(List.of("a", "b"), test(T0));
+            long start = System.nanoTime();
+            assertFalse(d.close(Duration.ofMillis(300)));
+            Duration took = Duration.ofNanos(System.nanoTime() - start);
+            assertTrue(took.compareTo(Duration.ofMillis(250)) >= 0, "waited for the hanging channel: " + took);
+            assertTrue(took.compareTo(Duration.ofSeconds(2)) < 0, "bounded: " + took);
+            assertEquals(1, failing.get(), "a failure during shutdown isn't retried");
+            assertTrue(logLines.stream().anyMatch(l -> l.startsWith("ERROR") && l.contains("shutting down")));
+            assertTrue(logLines.stream().anyMatch(l -> l.startsWith("WARNING")
+                    && l.contains("dropping 1 undelivered notification(s) for channel a")));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void realSchedulerDeliversAsynchronously() throws Exception {
         List<NotificationBatch> got = new java.util.concurrent.CopyOnWriteArrayList<>();
         java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);

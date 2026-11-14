@@ -1118,7 +1118,7 @@ test list are build, docs or manual steps.
 - [x] `EmailNotifier`: `POST /v1/messages`, stable UUID per notification across retries, response-code handling; text + HTML bodies, subject summary, event permalink. **Tests:** fake SimpleMailer API: 202; retry after 503 reuses the same id; 401 and 400 permanent; payload shape; HTML escaping of endpoint names and messages.
 
 ### M16 — Packaging & ops
-- [ ] Shutdown hook: final coverage heartbeat, stop scheduler, flush pending notifications (bounded), close checkers, kill HTTP server. **Tests:** shutdown closes checkers and writes final coverage within the time limit.
+- [x] Shutdown hook: final coverage heartbeat, stop scheduler, flush pending notifications (bounded), close checkers, kill HTTP server. **Tests:** shutdown closes checkers and writes final coverage within the time limit.
 - [ ] `mvn package` → runnable app jar; verify by starting it with `config.example.json`-derived test config and the MinecraftChecker jar in `plugins/`, checking `/health`, `/api/status` and `/`, then stopping it cleanly.
 - [ ] README: build, configure (`maxClass`, visibility, roles, history, auth, notifications, reminders, maintenance, sites), run, reverse proxy notes, backup of `data/`; sample systemd unit.
 - [ ] `PLUGINS.md`: writing a plugin (API, `settings()` / `SettingSpec`, `declareTarget`, Gson contract, services file, threading/timeout rules, minimal example, pointer to MinecraftChecker).
@@ -1950,3 +1950,13 @@ them; see CLAUDE.md.
   bug and permanent; `400`, `401` and every other status permanent, with SimpleMailer's `error`/`message`/`errors`
   in the channel error. 30 s request timeout, the same no-redirect HTTP/1.1 client as Discord.
   `NotificationConfig.notifiers` takes the timezone (`Daemon` passes `config.timezone()`).
+- Shutdown (`Daemon.close`, run by the JVM shutdown hook): a history heartbeat (coverage on disk up to now), then the
+  maintenance and check schedulers stop (in-flight checks get the 1 s grace period, then every checker is closed),
+  `HistoryStore.close` writes coverage up to that moment, reminders stop, pending notifications are flushed for at
+  most 10 s (`Daemon.NOTIFICATION_FLUSH_TIMEOUT`), and the web server stops last, so the dashboard answers until then.
+  Each step is isolated (a failing one is logged, the rest still run); a second `close()` (the hook racing `run`)
+  waits for the first. The flush (`NotificationDispatcher.close(Duration)`): no new notifications are accepted, open
+  batch windows close at once, a batch waiting for a retry is tried at once, failures are no longer retried, and
+  whatever is still undelivered at the deadline is dropped with a `WARNING` per channel (a delivery in progress is
+  abandoned). `close()` without a timeout still drops everything pending. Worst case is about 13 s, well within
+  systemd's default 90 s stop timeout.
