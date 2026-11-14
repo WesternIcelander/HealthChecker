@@ -24,6 +24,7 @@ import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
 import io.siggi.healthchecker.web.page.EndpointEditor;
 import io.siggi.healthchecker.web.page.EventEditor;
+import io.siggi.healthchecker.web.page.CategoryEditor;
 import io.siggi.healthchecker.web.page.LayoutEditor;
 import io.siggi.healthchecker.web.page.LoginPage;
 import io.siggi.healthchecker.web.page.ServicePage;
@@ -116,6 +117,9 @@ final class Daemon implements AutoCloseable {
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
                 endpoints::categoryConfigs, endpoints::definitions);
         layoutEditor.register(web);
+        CategoryEditor categoryEditor = new CategoryEditor(sites, permissions, sessions, endpoints, layout, config);
+        categoryEditor.register(web);
+        layoutEditor.categoryEditor(categoryEditor);
         EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config,
                 history);
         endpointEditor.register(web);

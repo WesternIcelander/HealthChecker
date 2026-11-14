@@ -734,4 +734,61 @@ class EndpointEditorTest {
         // Viewers can't reach the delete page at all.
         assertEquals(403, get("/admin/endpoints/website/delete", login("vic")).statusCode());
     }
+
+    @Test
+    void copyConfigEndpointToDashboard() throws Exception {
+        start(null);
+        Session root = login("root");
+        EndpointDefinition original = store.endpoint("website").orElseThrow().definition();
+        assertTrue(get("/admin/endpoints/website", root).body().contains("href=\"/admin/endpoints/website/copy\""));
+
+        HttpResponse<String> page = get("/admin/endpoints/website/copy", root);
+        assertEquals(200, page.statusCode());
+        assertTrue(page.body().contains("&quot;url&quot;: &quot;https://website.example.invalid&quot;"));
+        assertTrue(page.body().contains("value=\"copy\""));
+        assertFalse(page.body().contains("placeholders"));
+
+        // Needs endpoints.manage and CSRF.
+        assertEquals(403, post("/admin/endpoints/website/copy", login("vic"), Map.of("version", "0", "action", "copy"))
+                .statusCode());
+        assertEquals(403, post("/admin/endpoints/website/copy", new Session(root.cookie(), "x".repeat(64)),
+                Map.of("version", "0", "action", "copy")).statusCode());
+        assertTrue(store.endpointCopy("website").isEmpty());
+
+        HttpResponse<String> copied = post("/admin/endpoints/website/copy", root, Map.of("version", "0", "action", "copy"));
+        assertEquals(303, copied.statusCode());
+        assertEquals("/admin/endpoints/website/copy?copied=1", copied.headers().firstValue("Location").orElseThrow());
+        // The copy is the config entry as written: equivalent once parsed as a dashboard entry.
+        JsonObject copy = store.endpointCopy("website").orElseThrow();
+        assertEquals(new Gson().fromJson("""
+                { "id": "website", "name": "Website", "type": "http", "category": "web",
+                  "url": "https://website.example.invalid", "maxClass": 2 }""", JsonObject.class), copy);
+        assertEquals(original, ConfigLoader.parseEndpoint(copy, "", new ConfigLoader(n -> null, ZoneId.of("UTC"))
+                .load("{ \"defaults\": { \"intervalSeconds\": 45, \"notify\": [\"ops\"] }, "
+                        + "\"notifications\": { \"channels\": { \"ops\": {}, \"discord\": {} } } }").defaults(),
+                java.util.Set.of("web"), java.util.Set.of("ops", "discord"), Map.of()).value());
+        // Still read-only and checked as the config endpoint until the restart.
+        assertEquals(EndpointStore.Source.CONFIG, store.endpoint("website").orElseThrow().source());
+        assertEquals(1, store.definitions().size());
+
+        // The removal instructions.
+        String instructions = get("/admin/endpoints/website/copy?copied=1", root).body();
+        assertTrue(instructions.contains("Copied to data/endpoints.json."));
+        assertTrue(instructions.contains("Remove this entry from the <code>endpoints</code> array in <code>config.json</code>"));
+        assertTrue(instructions.contains("<pre class=\"cd-json cd-remove\">"));
+        assertTrue(instructions.contains("Restart HealthChecker"));
+        assertTrue(instructions.contains("value=\"cancel\""));
+        assertTrue(get("/admin/endpoints", root).body().contains("copied, restart pending"));
+        assertEquals(400, post("/admin/endpoints/website/copy", root,
+                Map.of("version", Integer.toString(store.version()), "action", "copy")).statusCode());
+
+        assertEquals(303, post("/admin/endpoints/website/copy", root,
+                Map.of("version", Integer.toString(store.version()), "action", "cancel")).statusCode());
+        assertTrue(store.endpointCopy("website").isEmpty());
+
+        // Dashboard endpoints have nothing to copy.
+        assertEquals(303, post("/admin/endpoints/new", root, testForm("shop", "shop.example.invalid",
+                "version", Integer.toString(store.version()))).statusCode());
+        assertEquals(404, get("/admin/endpoints/shop/copy", root).statusCode());
+    }
 }

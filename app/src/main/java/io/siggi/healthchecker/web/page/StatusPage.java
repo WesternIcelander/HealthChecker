@@ -208,7 +208,7 @@ public final class StatusPage {
         Viewer viewer = viewers.apply(request);
         StringBuilder html = new StringBuilder(16384);
         PageSupport.head(html, site, "Edit layout · " + site.title(), false, viewer);
-        editor.render(html, site, viewer);
+        editor.render(html, site, viewer, editor.canManageCategories(request));
         PageSupport.foot(html, site);
         request.response.setHeader("X-Frame-Options", "DENY");
         request.response.setHeader("Content-Security-Policy", "frame-ancestors 'none'");

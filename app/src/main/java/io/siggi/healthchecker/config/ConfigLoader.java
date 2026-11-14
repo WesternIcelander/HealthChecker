@@ -22,6 +22,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -110,7 +111,28 @@ public final class ConfigLoader {
         if (!problems.errors.isEmpty()) {
             throw new ConfigLoadException(problems.errors, problems.warnings);
         }
-        return config;
+        Set<String> endpointIds = new HashSet<>();
+        for (EndpointDefinition d : config.endpoints()) endpointIds.add(d.id());
+        Set<String> categoryIds = new HashSet<>();
+        for (CategoryConfig c : config.categories()) categoryIds.add(c.id());
+        JsonObject written = root.getAsJsonObject();
+        return config.withEntries(entries(written.get("endpoints"), substituted.get("endpoints"), endpointIds),
+                entries(written.get("categories"), substituted.get("categories"), categoryIds));
+    }
+
+    /** The entries of one array, as written and substituted, by (substituted) id, for the ids in {@code ids}. */
+    private static Map<String, Config.Entry> entries(JsonElement written, JsonElement resolved, Set<String> ids) {
+        Map<String, Config.Entry> out = new LinkedHashMap<>();
+        if (written == null || !written.isJsonArray() || resolved == null || !resolved.isJsonArray()) return out;
+        JsonArray w = written.getAsJsonArray();
+        JsonArray r = resolved.getAsJsonArray();
+        for (int i = 0; i < Math.min(w.size(), r.size()); i++) {
+            if (!w.get(i).isJsonObject() || !r.get(i).isJsonObject()) continue;
+            JsonElement id = r.get(i).getAsJsonObject().get("id");
+            if (id == null || !Section.isString(id) || !ids.contains(id.getAsString())) continue;
+            out.putIfAbsent(id.getAsString(), new Config.Entry(w.get(i).getAsJsonObject(), r.get(i).getAsJsonObject()));
+        }
+        return out;
     }
 
     /**

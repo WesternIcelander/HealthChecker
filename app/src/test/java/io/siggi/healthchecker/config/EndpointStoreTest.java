@@ -290,4 +290,106 @@ class EndpointStoreTest {
         store.removeEndpoint(3, "arcade");
         assertTrue(load(defaultConfig()).endpoint("arcade").isEmpty());
     }
+
+    // ---- "Copy to dashboard" ----
+
+    private Config configWithEnv(String categories, String endpoints) throws ConfigLoadException {
+        String json = """
+                { "dataDir": %s,
+                  "defaults": { "intervalSeconds": 45, "visibility": "public-status" },
+                  "notifications": { "channels": { "discord": {} } },
+                  "categories": [%s],
+                  "endpoints": [%s] }
+                """.formatted(new com.google.gson.Gson().toJson(dataDir.toString()), categories, endpoints);
+        return new ConfigLoader(name -> name.equals("SITE_HOST") ? "example.invalid" : null, ZoneId.of("UTC")).load(json);
+    }
+
+    private static final String WEB = """
+            { "id": "web", "name": "Websites", "description": "Our sites" }""";
+    private static final String WEBSITE = """
+            { "id": "website", "name": "Website", "type": "http", "category": "web",
+              "url": "https://${env:SITE_HOST}/", "maxClass": 2, "notify": ["discord"], "timeoutMillis": 900 }""";
+    private static final String BLOG = """
+            { "id": "blog", "name": "Blog", "type": "http", "url": "https://blog.example.invalid", "maxClass": 2 }""";
+
+    @Test
+    void copiedEndpointIsAnEquivalentEntryThatTakesOverAfterRemovalAndRestart() throws Exception {
+        Config config = configWithEnv(WEB, WEBSITE + "," + BLOG);
+        EndpointDefinition original = config.endpoints().getFirst();
+        assertTrue(config.endpointEntries().get("website").usesPlaceholders());
+        assertEquals("https://${env:SITE_HOST}/",
+                config.endpointEntries().get("website").written().get("url").getAsString());
+        EndpointStore store = load(config);
+
+        JsonObject copy = store.copyEndpoint(0, "website");
+        // The entry as written, with placeholders substituted (the file isn't substituted); nothing filled in.
+        assertEquals(json("""
+                { "id": "website", "name": "Website", "type": "http", "category": "web",
+                  "url": "https://example.invalid/", "maxClass": 2, "notify": ["discord"], "timeoutMillis": 900 }"""), copy);
+        assertEquals(1, store.version());
+        assertEquals(copy, store.endpointCopy("website").orElseThrow());
+        // Nothing changes until the restart: still the config endpoint, not listed twice.
+        assertEquals(List.of("website", "blog"), store.definitions().stream().map(EndpointDefinition::id).toList());
+        assertEquals(EndpointStore.Source.CONFIG, store.endpoint("website").orElseThrow().source());
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.copyEndpoint(1, "website"));
+        // Other writes keep the copy.
+        store.putCategory(1, json("{\"id\": \"games\", \"name\": \"Games\"}"));
+        assertTrue(store.endpointCopy("website").isPresent());
+
+        // Restarting without removing it from config.json is the "defined in both" error.
+        ConfigLoadException e = assertThrows(ConfigLoadException.class, () -> load(config));
+        assertTrue(e.getMessage().contains("endpoint id \"website\" is defined in both"), e.getMessage());
+
+        // After removing it, the copy takes over the same id with exactly the same settings.
+        EndpointStore after = load(configWithEnv(WEB, BLOG));
+        EndpointStore.StoredEndpoint website = after.endpoint("website").orElseThrow();
+        assertEquals(EndpointStore.Source.DASHBOARD, website.source());
+        assertEquals(original, website.definition());
+        assertEquals(List.of("blog", "website"), after.definitions().stream().map(EndpointDefinition::id).toList());
+        assertTrue(after.endpointCopy("website").isEmpty());
+    }
+
+    @Test
+    void copyCanBeCancelledAndOnlyConfigEntriesCanBeCopied() throws Exception {
+        Config config = configWithEnv(WEB, WEBSITE);
+        EndpointStore store = load(config);
+        store.putEndpoint(0, json("""
+                { "id": "shop", "name": "Shop", "type": "http", "url": "https://shop.example.invalid", "maxClass": 2 }"""));
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.copyEndpoint(1, "shop"));
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.copyEndpoint(1, "nope"));
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.cancelEndpointCopy(1, "website"));
+        assertThrows(EndpointStore.VersionConflictException.class, () -> store.copyEndpoint(0, "website"));
+        store.copyEndpoint(1, "website");
+        store.cancelEndpointCopy(2, "website");
+        assertTrue(store.endpointCopy("website").isEmpty());
+        // The restart works again, and the file has no trace of the copy.
+        EndpointStore reloaded = load(config);
+        assertEquals(EndpointStore.Source.CONFIG, reloaded.endpoint("website").orElseThrow().source());
+        assertFalse(Files.readString(store.file()).contains("\"website\""));
+    }
+
+    @Test
+    void copiedCategoryIsEquivalentAndTakesOverAfterRemovalAndRestart() throws Exception {
+        Config config = configWithEnv(WEB, BLOG);
+        EndpointStore store = load(config);
+        CategoryConfig copy = store.copyCategory(0, "web");
+        assertEquals(new CategoryConfig("web", "Websites", "Our sites"), copy);
+        assertEquals(copy, store.categoryCopy("web").orElseThrow());
+        assertEquals(List.of(EndpointStore.Source.CONFIG),
+                store.categories().stream().map(EndpointStore.StoredCategory::source).toList());
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.copyCategory(1, "web"));
+        // Still read-only until the restart.
+        assertThrows(EndpointStore.InvalidEntryException.class,
+                () -> store.putCategory(1, json("{\"id\": \"web\", \"name\": \"Renamed\"}")));
+        assertThrows(EndpointStore.InvalidEntryException.class, () -> store.removeCategory(1, "web"));
+
+        ConfigLoadException e = assertThrows(ConfigLoadException.class, () -> load(config));
+        assertTrue(e.getMessage().contains("category id \"web\" is defined in both"), e.getMessage());
+
+        EndpointStore after = load(configWithEnv("", BLOG));
+        assertEquals(List.of(new EndpointStore.StoredCategory(copy, EndpointStore.Source.DASHBOARD)), after.categories());
+        // Now it's a dashboard category: it can be renamed.
+        after.putCategory(1, json("{\"id\": \"web\", \"name\": \"Renamed\"}"));
+        assertEquals("Renamed", after.categoryConfigs().getFirst().name());
+    }
 }

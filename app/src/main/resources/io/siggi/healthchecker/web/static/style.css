@@ -733,3 +733,10 @@ h2.day-title { font-size: 1.4rem; }
 .ee-test-result.ee-test-fail { border-left-color: var(--down); }
 .ee-test-result h3 { margin: 0 0 4px; font-size: 1rem; }
 .ee-test-result p { margin: 4px 0 0; }
+
+/* Category editor links in the layout editor, and "Copy to dashboard" */
+.le-cat-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 0.9rem; }
+.le-cat-links { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.85rem; }
+.badge-copied { color: var(--muted); }
+.cd-json { overflow-x: auto; padding: 8px 10px; border-radius: 6px; background: var(--surface); font-size: 0.85rem; }
+.cd-steps li { margin-bottom: 8px; }

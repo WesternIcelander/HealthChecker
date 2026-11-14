@@ -257,4 +257,35 @@ class LayoutStoreTest {
         assertFalse(Files.exists(temp));
         assertTrue(Files.exists(other));
     }
+
+    @Test
+    void moveToOtherMovesADeletedCategorysServicesToOther() throws Exception {
+        LayoutStore store = new LayoutStore(dataDir);
+        store.load();
+        assertFalse(store.moveToOther("web")); // nothing saved: nothing to do
+        assertEquals(0, store.version());
+        store.save(0, List.of(
+                new SavedLayout.Category("web", List.of("blog", "survival")),
+                new SavedLayout.Category("_other", List.of("loose")),
+                new SavedLayout.Category("minecraft", List.of("creative"))));
+        assertTrue(store.moveToOther("web"));
+        assertEquals(2, store.version());
+        assertEquals(List.of(
+                new SavedLayout.Category("_other", List.of("loose", "blog", "survival")),
+                new SavedLayout.Category("minecraft", List.of("creative"))), store.saved().orElseThrow().categories());
+        assertFalse(store.moveToOther("web"));
+        assertFalse(store.moveToOther("_other"));
+        assertEquals(2, store.version());
+
+        // Without a saved "Other", it's created at the end. The change is on disk.
+        store.save(2, List.of(new SavedLayout.Category("minecraft", List.of("survival", "creative"))));
+        assertTrue(store.moveToOther("minecraft"));
+        LayoutStore reloaded = new LayoutStore(dataDir);
+        reloaded.load();
+        assertEquals(List.of(new SavedLayout.Category("_other", List.of("survival", "creative"))),
+                reloaded.saved().orElseThrow().categories());
+        // With the category gone, the services stay in "Other" instead of returning to their configured one.
+        List<CategoryConfig> remaining = List.of(CATEGORIES.get(0), CATEGORIES.get(2));
+        assertEquals(List.of("survival", "creative", "loose"), shape(reloaded.resolve(remaining, ENDPOINTS)).get("_other"));
+    }
 }

@@ -153,6 +153,7 @@ public final class EndpointEditor {
         String path = request.path();
         String rest;
         boolean delete = false;
+        boolean copy = false;
         if (path.equals(PATH)) {
             rest = null;
         } else if (path.startsWith(PATH + "/")) {
@@ -160,6 +161,10 @@ public final class EndpointEditor {
             if (rest.endsWith("/delete")) {
                 rest = rest.substring(0, rest.length() - "/delete".length());
                 delete = true;
+                if (!ID.matcher(rest).matches()) return;
+            } else if (rest.endsWith("/copy")) {
+                rest = rest.substring(0, rest.length() - "/copy".length());
+                copy = true;
                 if (!ID.matcher(rest).matches()) return;
             }
             if (rest.isEmpty() || rest.contains("/")) return; // nothing written → 404
@@ -193,6 +198,19 @@ public final class EndpointEditor {
         }
         Optional<EndpointStore.StoredEndpoint> stored = store.endpoint(rest);
         if (stored.isEmpty()) return; // nothing written → 404
+        if (copy) {
+            if (stored.get().source() != EndpointStore.Source.CONFIG) return; // only config endpoints → 404
+            if (post) {
+                if (!sessions.requireCsrf(request)) return;
+                String id = rest;
+                String[] failed = CopyToDashboard.submit(request, site, PATH + "/" + id + "/copy",
+                        version -> store.copyEndpoint(version, id), version -> store.cancelEndpointCopy(version, id));
+                if (failed != null) copyPage(request, site, failed[0], stored.get(), null, failed[1]);
+            } else {
+                copyPage(request, site, "200 OK", stored.get(), CopyToDashboard.notice(request), null);
+            }
+            return;
+        }
         if (delete) {
             if (stored.get().source() == EndpointStore.Source.CONFIG) {
                 PageSupport.write(request, "403 Forbidden", "text/plain; charset=utf-8",
@@ -716,7 +734,13 @@ public final class EndpointEditor {
                     .append(Html.escape(site.link(PATH + "/" + e.id()))).append("\">").append(Html.escape(name))
                     .append("</a> <code>").append(Html.escape(e.id())).append("</code>");
             if (type != null) html.append(" <span class=\"muted\">").append(Html.escape(type)).append("</span>");
-            if (e.source() == EndpointStore.Source.CONFIG) configBadge(html);
+            if (e.source() == EndpointStore.Source.CONFIG) {
+                configBadge(html);
+                if (store.endpointCopy(e.id()).isPresent()) {
+                    html.append(" <span class=\"badge badge-copied\" title=\"Copied to the dashboard; takes over after "
+                            + "it's removed from config.json and HealthChecker is restarted\">copied, restart pending</span>");
+                }
+            }
             if (!e.enabled()) {
                 html.append(" <span class=\"badge badge-disabled\">disabled</span><ul class=\"form-error-list\">");
                 for (String error : e.errors()) html.append("<li>").append(Html.escape(error)).append("</li>");
@@ -755,6 +779,11 @@ public final class EndpointEditor {
         html.append("</h2>\n<p class=\"muted\">This service is defined in <code>config.json</code>, so it can't be "
                 + "edited here. Change it there and restart. Its position on the main page can still be changed "
                 + "with the layout editor.</p>\n")
+                .append("<p class=\"page-actions\"><a class=\"button ee-copy\" href=\"")
+                .append(Html.escape(site.link(PATH + "/" + stored.id() + "/copy"))).append("\">")
+                .append(store.endpointCopy(stored.id()).isPresent()
+                        ? "Copied to the dashboard: finish or cancel…" : "Copy to dashboard…")
+                .append("</a></p>\n")
                 .append("<form class=\"endpoint-form ee-readonly\"><fieldset class=\"ee-all\" disabled>\n");
         fields(html, form, Errors.none(), false, true);
         html.append("</fieldset></form>\n");
@@ -830,6 +859,25 @@ public final class EndpointEditor {
         PageSupport.foot(html, site);
         secureHeaders(request);
         PageSupport.write(request, status, "text/html; charset=utf-8", html.toString());
+    }
+
+    /** "Copy to dashboard" for a config-defined endpoint. */
+    private void copyPage(HTTPRequest request, Site site, String status, EndpointStore.StoredEndpoint stored,
+                          String notice, String error) throws Exception {
+        String id = stored.id();
+        Config.Entry entry = config.endpointEntries().get(id);
+        if (entry == null) {
+            PageSupport.write(request, "500 Internal Server Error", "text/plain; charset=utf-8",
+                    "The config.json entry of this service isn't available.\n");
+            return;
+        }
+        StringBuilder crumbs = new StringBuilder();
+        crumbs(crumbs, site);
+        CopyToDashboard.page(request, site, permissions.viewer(request), status,
+                new CopyToDashboard.Subject("service", id, stored.definition().name(), "endpoints", entry.written(),
+                        entry.resolved(), store.endpointCopy(id).orElse(null), List.of()),
+                site.link(PATH + "/" + id + "/copy"), site.link(PATH + "/" + id), crumbs.toString(), store.version(),
+                notice, error);
     }
 
     private static void crumbs(StringBuilder html, Site site) {

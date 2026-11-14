@@ -149,6 +149,48 @@ public final class LayoutStore {
         return next;
     }
 
+    /**
+     * For a deleted category: if the saved layout has it, removes it and appends its services to
+     * "Other" (created at the end if the saved layout doesn't have it), as the next version. Without a
+     * saved entry for the category nothing is written, since the resolved layout already puts its
+     * remaining services elsewhere.
+     *
+     * @return whether the saved layout changed
+     * @throws IOException if writing fails; the saved layout is then unchanged
+     */
+    public synchronized boolean moveToOther(String categoryId) throws IOException {
+        SavedLayout current = saved;
+        if (current == null || categoryId.equals(SavedLayout.OTHER_ID)) return false;
+        List<SavedLayout.Category> categories = new ArrayList<>(current.categories());
+        int index = -1;
+        for (int i = 0; i < categories.size(); i++) {
+            if (categories.get(i).id().equals(categoryId)) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) return false;
+        if (current.version() == Integer.MAX_VALUE) {
+            throw new IOException(file + ": version limit reached");
+        }
+        List<String> moved = categories.remove(index).services();
+        int other = -1;
+        for (int i = 0; i < categories.size(); i++) {
+            if (categories.get(i).id().equals(SavedLayout.OTHER_ID)) other = i;
+        }
+        if (other < 0) {
+            categories.add(new SavedLayout.Category(SavedLayout.OTHER_ID, moved));
+        } else {
+            List<String> services = new ArrayList<>(categories.get(other).services());
+            services.addAll(moved);
+            categories.set(other, new SavedLayout.Category(SavedLayout.OTHER_ID, services));
+        }
+        SavedLayout next = new SavedLayout(current.version() + 1, categories);
+        AtomicFiles.write(file, encode(next).getBytes(StandardCharsets.UTF_8));
+        saved = next;
+        return true;
+    }
+
     static String encode(SavedLayout layout) {
         JsonObject root = new JsonObject();
         root.addProperty("version", layout.version());

@@ -82,8 +82,20 @@ public final class LayoutEditor {
         this.endpoints = endpoints;
     }
 
+    private CategoryEditor categoryEditor;
+
     public void register(WebServer server) {
         server.register(PATH, this::post);
+    }
+
+    /** Adds the category editor's links (add, rename, delete, "Copy to dashboard") for users who may use it. */
+    public void categoryEditor(CategoryEditor categoryEditor) {
+        this.categoryEditor = categoryEditor;
+    }
+
+    /** Whether the request's user gets the category editor's links. */
+    boolean canManageCategories(HTTPRequest request) {
+        return categoryEditor != null && categoryEditor.canManage(request);
     }
 
     /** The current effective layout. */
@@ -116,6 +128,17 @@ public final class LayoutEditor {
 
     /** The editor section for the main page in edit mode. */
     void render(StringBuilder html, Site site, Viewer viewer) {
+        render(html, site, viewer, false);
+    }
+
+    /**
+     * The editor section for the main page in edit mode.
+     *
+     * @param manageCategories whether to show the category editor's links (plain links, so they work
+     *                         without JS too)
+     */
+    void render(StringBuilder html, Site site, Viewer viewer, boolean manageCategories) {
+        CategoryEditor categories = manageCategories ? categoryEditor : null;
         ResolvedLayout layout = layout();
         Map<String, EndpointDefinition> byId = new HashMap<>();
         for (EndpointDefinition endpoint : endpoints.get()) {
@@ -133,8 +156,14 @@ public final class LayoutEditor {
                         : "Drag categories and services, or use the arrow buttons and category menus, to change "
                         + "the order and move services between categories.")
                 .append(" Every service is listed, including private ones. The layout is shared by all sites.</p>\n")
-                .append("<noscript><p class=\"form-error\">The layout editor needs JavaScript.</p></noscript>\n")
-                .append("<ol class=\"le-categories\">");
+                .append("<noscript><p class=\"form-error\">The layout editor needs JavaScript.</p></noscript>\n");
+        if (categories != null) {
+            html.append("<p class=\"le-cat-tools\"><a class=\"button le-cat-add\" href=\"")
+                    .append(Html.escape(site.link(CategoryEditor.PATH + "/new"))).append("\">Add category</a> ")
+                    .append("<span class=\"muted\">Category changes are saved right away; save your layout changes "
+                            + "first.</span></p>\n");
+        }
+        html.append("<ol class=\"le-categories\">");
         for (ResolvedLayout.Category category : layout.categories()) {
             String name = category.isOther() ? "Other" : category.config().name();
             String id = category.id();
@@ -144,6 +173,8 @@ public final class LayoutEditor {
                     .append("<h3 class=\"le-category-name\">").append(Html.escape(name)).append("</h3>");
             if (category.isOther()) {
                 html.append("<span class=\"muted le-note\">services without a category</span>");
+            } else if (categories != null) {
+                categoryLinks(html, site, categories, id, name);
             }
             html.append("<span class=\"le-controls\">");
             moveButtons(html, "category " + name);
@@ -162,6 +193,26 @@ public final class LayoutEditor {
                 .append("<a class=\"le-cancel button\" href=\"").append(Html.escape(site.link("/"))).append("\">Cancel</a>")
                 .append("<button type=\"button\" class=\"le-reset\">Reset to config order</button>")
                 .append("</div>\n<p class=\"le-status\" role=\"status\" aria-live=\"polite\"></p>\n</section>\n");
+    }
+
+    /** Rename/Delete for a dashboard category; a "config" badge and "Copy to dashboard" for a config one. */
+    private static void categoryLinks(StringBuilder html, Site site, CategoryEditor categories, String id, String name) {
+        Optional<io.siggi.healthchecker.config.EndpointStore.Source> source = categories.source(id);
+        if (source.isEmpty()) return;
+        String base = CategoryEditor.PATH + "/" + id;
+        html.append("<span class=\"le-cat-links\">");
+        if (source.get() == io.siggi.healthchecker.config.EndpointStore.Source.CONFIG) {
+            html.append("<span class=\"badge badge-config\" title=\"Defined in config.json\">config</span> ")
+                    .append("<a class=\"le-cat-copy\" href=\"").append(Html.escape(site.link(base + "/copy")))
+                    .append("\" aria-label=\"Copy category ").append(Html.escape(name)).append(" to the dashboard\">")
+                    .append(categories.copied(id) ? "Copied (restart pending)" : "Copy to dashboard").append("</a>");
+        } else {
+            html.append("<a class=\"le-cat-rename\" href=\"").append(Html.escape(site.link(base)))
+                    .append("\" aria-label=\"Rename category ").append(Html.escape(name)).append("\">Rename</a> ")
+                    .append("<a class=\"le-cat-delete\" href=\"").append(Html.escape(site.link(base + "/delete")))
+                    .append("\" aria-label=\"Delete category ").append(Html.escape(name)).append("\">Delete</a>");
+        }
+        html.append("</span>");
     }
 
     private static void service(StringBuilder html, ResolvedLayout layout, ResolvedLayout.Category current,

@@ -1092,7 +1092,7 @@ test list are build, docs or manual steps.
 - [x] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
 - [x] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
 - [x] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
-- [ ] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
+- [x] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
 - [ ] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
 
 ### M12 — Scheduled maintenance
@@ -1627,3 +1627,26 @@ them; see CLAUDE.md.
   stored coverage, events or targets, also of an endpoint removed from `config.json`); the error is on the `id` field.
   "Test now" isn't affected. There's no dashboard action to delete the history of an already-deleted endpoint: remove
   `data/endpoints/{id}` while the app is stopped to free the id.
+- Category editor (app, `web.page.CategoryEditor`, `LayoutStore.moveToOther`): plain form pages under
+  `/admin/categories` (`new`, `{id}` = rename, `{id}/delete`, `{id}/copy`), reached by links in the layout editor, so
+  they work without JS; changes are saved right away and return to `/?edit=layout` (the editor's unsaved-changes warning
+  covers leaving it). Same access as the endpoint editor (`endpoints.manage` + `view.private`; the layout editor only
+  shows the links to such users), CSRF, and the endpoints `version` (`409` when stale). The id is set at creation only;
+  a new id used by either source is an error. Config categories get a "config" badge and a read-only view; their rename
+  and delete are `403`. Deleting asks for confirmation listing the category's services (layout order, plus disabled
+  dashboard endpoints in it); `EndpointStore.removeCategory` drops `category` from its dashboard endpoints, then
+  `LayoutStore.moveToOther` moves the saved layout's services of that category to the end of "Other" (created last if
+  the saved layout lacks it) as the next layout version, so config endpoints the layout had put there go to "Other"
+  too instead of back to their config category. If that layout write fails, the deletion stands and it's logged.
+- "Copy to dashboard" (app, `EndpointStore.copyEndpoint`/`copyCategory`, `web.page.CopyToDashboard`): `Config` now keeps
+  each config endpoint/category entry as written and as env-substituted (`Config.Entry`). The copy is the substituted
+  entry (the dashboard file isn't substituted, so placeholders' current values are stored; the page says so), not the
+  effective values, so `defaults` keep applying as before. It's validated as a dashboard entry as it will be after the
+  restart and must parse to exactly the same endpoint/category. Copies are written into `data/endpoints.json` next to
+  the dashboard entries but held aside until restart (later writes keep them; nothing changes at runtime, the config
+  entry stays read-only and checked). The page then shows the removal instructions: the snippet as written in
+  `config.json` (with its placeholders), "restart", for a category the config services still using it (copy or
+  re-categorise them first, else `config.json` no longer loads), and "Cancel copy" (removes the pending copy).
+  Restarting without removing the config entry is the existing "defined in both" startup error. Pending copies are
+  marked in the services list and the layout editor. Copied entries go after the file's other entries, so with no saved
+  layout an endpoint's default position moves to after the config endpoints.

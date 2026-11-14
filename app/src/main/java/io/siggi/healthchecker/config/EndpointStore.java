@@ -129,8 +129,30 @@ public final class EndpointStore {
         }
     }
 
-    /** An immutable snapshot of the dashboard-defined part. */
-    private record State(int version, List<CategoryConfig> categories, List<StoredEndpoint> endpoints) {
+    /**
+     * An immutable snapshot of the dashboard-defined part.
+     *
+     * @param categoryCopies config categories copied with "Copy to dashboard", waiting for their
+     *                       config entry to be removed (and a restart); written to the file, not used yet
+     * @param endpointCopies the same for config endpoints
+     */
+    private record State(int version, List<CategoryConfig> categories, List<StoredEndpoint> endpoints,
+                         List<CategoryConfig> categoryCopies, List<JsonObject> endpointCopies) {
+        State {
+            categories = List.copyOf(categories);
+            endpoints = List.copyOf(endpoints);
+            categoryCopies = List.copyOf(categoryCopies);
+            endpointCopies = List.copyOf(endpointCopies);
+        }
+
+        State(int version, List<CategoryConfig> categories, List<StoredEndpoint> endpoints) {
+            this(version, categories, endpoints, List.of(), List.of());
+        }
+
+        /** The next version with other dashboard categories and endpoints, keeping the copies. */
+        State next(List<CategoryConfig> categories, List<StoredEndpoint> endpoints) {
+            return new State(version + 1, categories, endpoints, categoryCopies, endpointCopies);
+        }
     }
 
     private final Path file;
@@ -267,7 +289,7 @@ public final class EndpointStore {
         } else {
             endpoints.add(stored);
         }
-        write(new State(current.version() + 1, current.categories(), endpoints));
+        write(current.next(current.categories(), endpoints));
         return stored;
     }
 
@@ -327,7 +349,7 @@ public final class EndpointStore {
             throw new InvalidEntryException(List.of(notDashboard("endpoint", id, configEndpointIds().contains(id))));
         }
         endpoints.remove(index);
-        write(new State(current.version() + 1, current.categories(), endpoints));
+        write(current.next(current.categories(), endpoints));
     }
 
     /**
@@ -354,7 +376,7 @@ public final class EndpointStore {
         } else {
             categories.add(category);
         }
-        write(new State(current.version() + 1, categories, current.endpoints()));
+        write(current.next(categories, current.endpoints()));
         return category;
     }
 
@@ -392,7 +414,138 @@ public final class EndpointStore {
                 endpoints.add(validate(entry, e.id(), categoryIds, namesInUse(current, e.id()), config, validator));
             }
         }
-        write(new State(current.version() + 1, categories, endpoints));
+        write(current.next(categories, endpoints));
+    }
+
+    // ---- "Copy to dashboard" -------------------------------------------------------------
+
+    /**
+     * "Copy to dashboard" for a config endpoint: writes its {@code config.json} entry (with
+     * {@code ${env:…}} placeholders substituted, since this file isn't substituted) to this file.
+     * Nothing else changes until the entry is removed from {@code config.json} and the app restarted;
+     * then the copy takes over the same id and history. Restarting without removing it is the
+     * usual "defined in both" startup error. The copy is validated as a dashboard entry first and must
+     * give exactly the same endpoint.
+     *
+     * @return the stored entry
+     * @throws InvalidEntryException if there's no such config endpoint, it was already copied, or the
+     *                               copy wouldn't be valid or equivalent
+     */
+    public synchronized JsonObject copyEndpoint(int expectedVersion, String id)
+            throws InvalidEntryException, VersionConflictException, IOException {
+        State current = checkVersion(expectedVersion);
+        EndpointDefinition original = config.endpoints().stream().filter(d -> d.id().equals(id)).findFirst()
+                .orElseThrow(() -> new InvalidEntryException(List.of("id: no config.json endpoint \"" + id + "\"")));
+        if (copyIndex(current.endpointCopies(), id) >= 0) {
+            throw new InvalidEntryException(List.of("id: \"" + id + "\" was already copied to the dashboard"));
+        }
+        Config.Entry source = config.endpointEntries().get(id);
+        if (source == null) {
+            throw new InvalidEntryException(List.of("id: the config.json entry of \"" + id + "\" isn't available"));
+        }
+        JsonObject entry = source.resolved();
+        // Validated as it will be after the restart, when the config entry is gone.
+        ConfigLoader.EntryResult<EndpointDefinition> parsed = ConfigLoader.parseEndpoint(entry, "",
+                config.defaults(), categoryIds(current.categories()), config.notificationChannels(),
+                namesInUse(current, id));
+        if (parsed.value() == null) throw new InvalidEntryException(parsed.errors());
+        try {
+            validator.validate(parsed.value());
+        } catch (ConfigException e) {
+            throw new InvalidEntryException(List.of(describe(e)));
+        } catch (RuntimeException | LinkageError e) {
+            throw new InvalidEntryException(List.of("validation failed: " + e));
+        }
+        if (!parsed.value().equals(original)) {
+            throw new InvalidEntryException(List.of("the copy wouldn't be equivalent to the config.json entry"));
+        }
+        List<JsonObject> copies = new ArrayList<>(current.endpointCopies());
+        copies.add(entry);
+        write(new State(current.version() + 1, current.categories(), current.endpoints(), current.categoryCopies(),
+                copies));
+        return entry.deepCopy();
+    }
+
+    /**
+     * "Copy to dashboard" for a config category: writes it to this file, like {@link #copyEndpoint}.
+     *
+     * @return the stored category
+     * @throws InvalidEntryException if there's no such config category or it was already copied
+     */
+    public synchronized CategoryConfig copyCategory(int expectedVersion, String id)
+            throws InvalidEntryException, VersionConflictException, IOException {
+        State current = checkVersion(expectedVersion);
+        CategoryConfig original = config.categories().stream().filter(c -> c.id().equals(id)).findFirst()
+                .orElseThrow(() -> new InvalidEntryException(List.of("id: no config.json category \"" + id + "\"")));
+        if (categoryIndex(current.categoryCopies(), id) >= 0) {
+            throw new InvalidEntryException(List.of("id: \"" + id + "\" was already copied to the dashboard"));
+        }
+        Config.Entry source = config.categoryEntries().get(id);
+        JsonObject entry = source != null ? source.resolved() : categoryEntry(original);
+        ConfigLoader.EntryResult<CategoryConfig> parsed = ConfigLoader.parseCategory(entry, "");
+        if (parsed.value() == null) throw new InvalidEntryException(parsed.errors());
+        if (!parsed.value().equals(original)) {
+            throw new InvalidEntryException(List.of("the copy wouldn't be equivalent to the config.json entry"));
+        }
+        List<CategoryConfig> copies = new ArrayList<>(current.categoryCopies());
+        copies.add(parsed.value());
+        write(new State(current.version() + 1, current.categories(), current.endpoints(), copies,
+                current.endpointCopies()));
+        return parsed.value();
+    }
+
+    /** Takes back "Copy to dashboard" for a config endpoint before the restart. */
+    public synchronized void cancelEndpointCopy(int expectedVersion, String id)
+            throws InvalidEntryException, VersionConflictException, IOException {
+        State current = checkVersion(expectedVersion);
+        List<JsonObject> copies = new ArrayList<>(current.endpointCopies());
+        int index = copyIndex(copies, id);
+        if (index < 0) throw new InvalidEntryException(List.of("id: \"" + id + "\" wasn't copied to the dashboard"));
+        copies.remove(index);
+        write(new State(current.version() + 1, current.categories(), current.endpoints(), current.categoryCopies(),
+                copies));
+    }
+
+    /** Takes back "Copy to dashboard" for a config category before the restart. */
+    public synchronized void cancelCategoryCopy(int expectedVersion, String id)
+            throws InvalidEntryException, VersionConflictException, IOException {
+        State current = checkVersion(expectedVersion);
+        List<CategoryConfig> copies = new ArrayList<>(current.categoryCopies());
+        int index = categoryIndex(copies, id);
+        if (index < 0) throw new InvalidEntryException(List.of("id: \"" + id + "\" wasn't copied to the dashboard"));
+        copies.remove(index);
+        write(new State(current.version() + 1, current.categories(), current.endpoints(), copies,
+                current.endpointCopies()));
+    }
+
+    /** The copy of config endpoint {@code id} waiting for a restart, if it was copied to the dashboard. */
+    public Optional<JsonObject> endpointCopy(String id) {
+        List<JsonObject> copies = state.endpointCopies();
+        int index = copyIndex(copies, id);
+        return index < 0 ? Optional.empty() : Optional.of(copies.get(index).deepCopy());
+    }
+
+    /** The copy of config category {@code id} waiting for a restart, if it was copied to the dashboard. */
+    public Optional<CategoryConfig> categoryCopy(String id) {
+        List<CategoryConfig> copies = state.categoryCopies();
+        int index = categoryIndex(copies, id);
+        return index < 0 ? Optional.empty() : Optional.of(copies.get(index));
+    }
+
+    /** The JSON entry of a category, as stored in this file. */
+    public static JsonObject categoryEntry(CategoryConfig c) {
+        JsonObject o = new JsonObject();
+        o.addProperty("id", c.id());
+        o.addProperty("name", c.name());
+        if (c.description() != null) o.addProperty("description", c.description());
+        return o;
+    }
+
+    private static int copyIndex(List<JsonObject> copies, String id) {
+        for (int i = 0; i < copies.size(); i++) {
+            if (copies.get(i).get("id") instanceof JsonPrimitive p && p.isString() && p.getAsString().equals(id)) return i;
+        }
+        return -1;
     }
 
     private State checkVersion(int expectedVersion) throws VersionConflictException, IOException {
@@ -452,9 +605,9 @@ public final class EndpointStore {
         return ids;
     }
 
-    /** Names of every endpoint except dashboard endpoint {@code exceptId}, → who uses them. */
+    /** Names of every endpoint except the one(s) with id {@code exceptId}, → who uses them. */
     private Map<String, String> namesInUse(State current, String exceptId) {
-        Map<String, String> names = configNames(config);
+        Map<String, String> names = configNames(config, exceptId);
         for (StoredEndpoint e : current.endpoints()) {
             if (e.id().equals(exceptId)) continue;
             String name = nameOf(e.entry);
@@ -463,9 +616,10 @@ public final class EndpointStore {
         return names;
     }
 
-    private static Map<String, String> configNames(Config config) {
+    private static Map<String, String> configNames(Config config, String exceptId) {
         Map<String, String> names = new HashMap<>();
         for (EndpointDefinition d : config.endpoints()) {
+            if (d.id().equals(exceptId)) continue;
             names.putIfAbsent(d.name(), "config.json endpoint \"" + d.id() + "\"");
         }
         return names;
@@ -519,16 +673,13 @@ public final class EndpointStore {
         JsonObject root = new JsonObject();
         root.addProperty("version", state.version());
         JsonArray categories = new JsonArray();
-        for (CategoryConfig c : state.categories()) {
-            JsonObject o = new JsonObject();
-            o.addProperty("id", c.id());
-            o.addProperty("name", c.name());
-            if (c.description() != null) o.addProperty("description", c.description());
-            categories.add(o);
-        }
+        List<CategoryConfig> allCategories = new ArrayList<>(state.categories());
+        allCategories.addAll(state.categoryCopies());
+        for (CategoryConfig c : allCategories) categories.add(categoryEntry(c));
         root.add("categories", categories);
         JsonArray endpoints = new JsonArray();
         for (StoredEndpoint e : state.endpoints()) endpoints.add(e.entry());
+        for (JsonObject copy : state.endpointCopies()) endpoints.add(copy.deepCopy());
         root.add("endpoints", endpoints);
         return GSON.toJson(root) + "\n";
     }
@@ -594,7 +745,7 @@ public final class EndpointStore {
         Set<String> configIds = new HashSet<>();
         for (EndpointDefinition d : config.endpoints()) configIds.add(d.id());
         Set<String> seenIds = new HashSet<>();
-        Map<String, String> names = configNames(config);
+        Map<String, String> names = configNames(config, null);
         List<StoredEndpoint> endpoints = new ArrayList<>();
         JsonArray endpointArray = array(root, "endpoints", file, errors);
         for (int i = 0; i < endpointArray.size(); i++) {
