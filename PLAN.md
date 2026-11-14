@@ -1057,7 +1057,7 @@ test list are build, docs or manual steps.
 ### M6 — Public main page & status API
 - [x] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
 - [x] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
-- [ ] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
+- [x] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
 - [ ] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
 - [ ] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
 
@@ -1314,3 +1314,19 @@ them; see CLAUDE.md.
   The leak filter compares case-insensitively and checks message text, each detail's key and value
   (`String.valueOf`) and failure messages against every non-empty declared target value; a match drops
   that item only.
+- Layout (app, package `web.layout`, a new subpackage of `web`): `LayoutStore` reads
+  `{dataDir}/layout.json` (`{"version": n, "categories": [{"id", "services": [...]}]}`); "Other" is stored
+  as `"_other"`, which can't clash with a category id. A missing file means no saved layout (version 0);
+  a malformed file (bad JSON, wrong types, unknown keys, negative or fractional version) is an error
+  naming the file, not silently ignored, so a later save can't drop it. `ResolvedLayout.resolve` merges it
+  with the current categories and endpoints: saved category order, service order and category win;
+  missing categories are appended in config order, then "Other" if missing; missing endpoints are appended
+  to their configured category in config order; stale or repeated saved ids are ignored (first wins); an
+  endpoint whose category no longer exists goes to "Other". "Other" is always part of the resolved layout
+  (possibly empty, for the editor). With no categories at all the layout is flat: every endpoint is in
+  "Other" (a saved `_other` order still applies). `run` doesn't load it yet; the web server does.
+- `CategoryGrouping` (app, package `web.view`): turns the resolved layout into `CategorySection`s for a
+  viewer, using `ViewFilter` per endpoint; categories with no visible service are left out, the flat
+  layout gives one section without a heading, and "Other" is headed "Other". Heading summary over the
+  visible services: "{d} of {n} down" if any is DOWN, else "{u} of {n} not checked yet" if any is
+  UNKNOWN, else "All operational" (maintenance is added with M12).
