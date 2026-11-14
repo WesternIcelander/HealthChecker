@@ -2,6 +2,7 @@ package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.auth.PasswordHasher;
+import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.ConfigLoadException;
 import io.siggi.healthchecker.config.ConfigLoader;
@@ -106,7 +107,12 @@ public final class Main {
             for (PluginManager.LoadedPlugin p : plugins.plugins()) {
                 out.println("Loaded plugin " + p.describe());
             }
-            List<String> endpointErrors = plugins.validateEndpoints(config.endpoints());
+            List<String> endpointErrors = new java.util.ArrayList<>(plugins.validateEndpoints(config.endpoints()));
+            try {
+                SessionManager.sessionDays(config.auth());
+            } catch (IllegalArgumentException e) {
+                endpointErrors.add(e.getMessage());
+            }
             if (!endpointErrors.isEmpty()) {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
                 return EXIT_ERROR;

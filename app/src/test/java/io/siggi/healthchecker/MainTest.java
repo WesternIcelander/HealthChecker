@@ -117,6 +117,18 @@ class MainTest {
     }
 
     @Test
+    void runReportsInvalidSessionDays(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("config.json");
+        Files.writeString(config, """
+                { "plugins": { "dir": "%s" }, "auth": { "sessionDays": 0 } }
+                """.formatted(json(dir.resolve("plugins"))));
+        assertEquals(Main.EXIT_ERROR, execute("run", config.toString()));
+        String errText = errBytes.toString(StandardCharsets.UTF_8);
+        assertTrue(errText.contains("1 configuration error:"), errText);
+        assertTrue(errText.contains("auth.sessionDays must be a whole number from 1 to 365"), errText);
+    }
+
+    @Test
     void runReportsMissingFile(@TempDir Path dir) {
         assertEquals(Main.EXIT_ERROR, execute("run", dir.resolve("missing.json").toString()));
         assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("file not found"));

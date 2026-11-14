@@ -1,6 +1,7 @@
 package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
+import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.history.HistoryStore;
@@ -35,6 +36,7 @@ final class Daemon implements AutoCloseable {
     private final CheckScheduler scheduler;
     private final UptimeCalculator uptime;
     private final WebServer web;
+    private final SessionManager sessions;
     private final CountDownLatch closed = new CountDownLatch(1);
     private boolean closing;
 
@@ -58,6 +60,9 @@ final class Daemon implements AutoCloseable {
         LayoutStore layout = new LayoutStore(config.dataDir());
         layout.load();
         web = new WebServer(config.server());
+        // Login, users and the logged-in viewer come with the next M9 steps; until then every viewer is anonymous.
+        sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
+                web.trustedProxies());
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
         new StatusPage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
                 registry::get, status::status, request -> Viewer.ANONYMOUS, uptime, config.dashboard())

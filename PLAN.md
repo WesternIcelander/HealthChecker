@@ -1076,7 +1076,7 @@ test list are build, docs or manual steps.
 - [x] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
 ### M9 — Sessions, built-in login, roles & permissions
-- [ ] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
+- [x] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
 - [ ] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
 - [ ] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
 - [ ] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
@@ -1454,3 +1454,16 @@ them; see CLAUDE.md.
   tests skipped, `mvn package` for the plugin), runs `FakeStatusServerMain` (test classes; prints its port and a free
   port for HealthChecker) and the app jar against a generated config in a temp dir, polls `/api/status` until the
   endpoint is UP, then stops HealthChecker with SIGTERM.
+- Sessions (app, `auth.SessionManager`): one SiggiHTTP `Sessions` from `SessionsBuilder` in `{dataDir}/sessions`,
+  idle lifetime and cookie `Max-Age` both `auth.sessionDays` (a whole number 1–365, default 7, reported as a configuration
+  error by `run`), `SameSite=Lax`, default cookie name `SessID`. Session keys: `user` (user id) and `csrf` (32 random
+  bytes, hex). `read`/`userId` use `readSession` (no cookie for anonymous visitors, sliding expiry with a refreshed
+  `Max-Age`); `login` uses `resetSession` (new ID and new CSRF token); `logout` uses `deleteSession`; `csrfToken` opens a
+  session only when there's no token yet (the login form), so a pre-login session exists and is replaced at login.
+  CSRF tokens come from the `csrf` form field or the `X-CSRF-Token` header (JSON POSTs), compared with
+  `MessageDigest.isEqual`; `requireCsrf` answers `403` (plain text) on a missing or wrong token. Workaround for
+  SiggiHTTP: `Sessions` decides `Secure` with `request.isSecure()`, which always trusts loopback and Cloudflare, so after
+  every session call `SessionManager` rewrites the session's `Set-Cookie` headers with `Secure` exactly when
+  `TrustedProxies.isSecure` says HTTPS (keeping only the last session cookie header when a read and a write both set
+  it). `run` creates the `SessionManager`; the viewer stays anonymous until users and login are wired up in the next
+  M9 steps.
