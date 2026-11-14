@@ -1072,7 +1072,7 @@ test list are build, docs or manual steps.
 - [x] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
 - [x] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
 - [x] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
-- [ ] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
+- [x] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
 - [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
 ### M9 — Sessions, built-in login, roles & permissions
@@ -1434,5 +1434,12 @@ them; see CLAUDE.md.
   25565 when it's unset (as the modern vanilla client sends it). Declared targets are fixed when `create()` runs, so
   `create()` does a best-effort SRV lookup (2 s limit; a failure is ignored, not a config error) and declares `host`,
   `port` (when set) and each record's `srv target` and `srv port`. Records that change later aren't declared;
-  messages never contain targets anyway. `create()` reads `host`/`port`/`srv` without further validation until the
-  settings step.
+  messages never contain targets anyway.
+- MinecraftChecker settings (`MinecraftSettings`): validated in key order, the first invalid one throws a
+  `ConfigException` with its key. `host`: a host name (dot-separated labels of letters, digits, `_` and inner `-`,
+  1-63 characters each, at most 253 in total, no trailing dot), an IPv4 literal or an IPv6 literal (brackets optional
+  and removed); a `host:port` form is rejected with a hint to use `port`. `port` 1-65535. `minOnline` >= 0; a hidden
+  player count fails the check when `minOnline` is set. `expectVersionContains`: non-empty, at most 256 characters,
+  case-sensitive substring of `version.name`. The version condition is checked before the player count; failures keep
+  the status details, with messages `unexpected version` and `N players online, expected at least M`.
+  `displayName()` is "Minecraft (Java Edition)"; `srv`'s spec has default `true`.
