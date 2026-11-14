@@ -1,6 +1,7 @@
 package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
+import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.Config;
@@ -114,6 +115,7 @@ public final class Main {
             } catch (IllegalArgumentException e) {
                 endpointErrors.add(e.getMessage());
             }
+            LocalLogin.settings(config.auth(), endpointErrors);
             if (!endpointErrors.isEmpty()) {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
                 return EXIT_ERROR;

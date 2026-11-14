@@ -1078,7 +1078,7 @@ test list are build, docs or manual steps.
 ### M9 — Sessions, built-in login, roles & permissions
 - [x] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
 - [x] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
-- [ ] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
+- [x] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
 - [ ] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
 
 ### M10 — Dashboard editing: layout, event titles & notes
@@ -1475,3 +1475,19 @@ them; see CLAUDE.md.
   the hash (config validation and login use it); `verify` compares with `MessageDigest.isEqual`. `hash-password` reads
   through a small `PasswordPrompt` interface (backed by `Console.readPassword`) so tests can drive it; it rejects an
   empty or mismatched password and prints only the hash to stdout.
+- Built-in login (app, `auth.LocalLogin`, `auth.LoginRateLimiter`, `web.page.LoginPage`): the username is the user id,
+  matched exactly. Every attempt that isn't rate limited costs one PBKDF2 verification: unknown users, users without a
+  password, disabled users and passwords over 1024 characters are checked against a dummy hash (a random password hashed
+  once with the default parameters), and all failures get the same "Wrong username or password." (`401`, form shown
+  again with the username kept). Failures are counted in a sliding 15-minute window per client IP (from
+  `TrustedProxies`; IPv6 grouped by /64) and per username (case-insensitive, first 256 characters); at 10 failures for
+  either key, attempts get `429` with `Retry-After` and aren't checked at all (and don't count again). A success clears
+  the username's failures, not the IP's. The limiter is in memory (a restart resets it); expired keys are swept every
+  1024 failures. `GET /login` shows the form (its CSRF token starts the pre-login session) or, when signed in, the
+  user and a "Sign out" button; `POST /login` needs the CSRF token (`403`), then answers `303` to `next`. `next` is
+  only a path on the same site (single leading `/`, printable ASCII, no backslash, ≤ 2048 characters; anything else
+  means `/`), and the redirect is built with `Site.link`. `POST /logout` (CSRF) deletes the session and answers `303`
+  to `/`; other methods get `405`. Both pages are `no-store` and can't be framed. With `auth.local.enabled: false` the
+  form isn't shown and `POST /login` is `404`. Until the users and roles step, `run` reads only what login needs from
+  `auth` (`local.enabled`, each user's `id`, `password` (validated hash) and `disabled`); failed sign-ins are logged
+  with the client IP only (never the username or password); the audit log records come with `/admin/audit`.

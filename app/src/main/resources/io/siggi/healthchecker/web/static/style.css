@@ -479,3 +479,28 @@ h2.day-title { font-size: 1.4rem; }
 }
 
 .tooltip[hidden] { display: none; }
+
+/* ---- sign-in ---- */
+
+.login { max-width: 360px; margin: 32px auto; }
+.login form { display: flex; flex-direction: column; gap: 6px; }
+.login label { font-weight: 600; margin-top: 8px; }
+.login input {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.login button {
+  font: inherit;
+  margin-top: 12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--link);
+  color: #fff;
+  cursor: pointer;
+}
+.form-error { color: var(--down); font-weight: 600; }

@@ -1,6 +1,8 @@
 package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
+import io.siggi.healthchecker.auth.LocalLogin;
+import io.siggi.healthchecker.auth.LoginRateLimiter;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.EndpointDefinition;
@@ -15,6 +17,7 @@ import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.page.LoginPage;
 import io.siggi.healthchecker.web.page.ServicePage;
 import io.siggi.healthchecker.web.page.StatusPage;
 import io.siggi.healthchecker.web.site.SiteResolver;
@@ -27,7 +30,7 @@ import java.util.concurrent.CountDownLatch;
 /**
  * The running service: endpoints from the config checked by the scheduler, results recorded
  * in the status registry and the history, and the dashboard served by the web server.
- * Every viewer is anonymous until login exists (M9).
+ * Sign-in works; pages still show every viewer the anonymous view until users and roles exist (M9).
  */
 final class Daemon implements AutoCloseable {
     private final HistoryStore history;
@@ -60,10 +63,14 @@ final class Daemon implements AutoCloseable {
         LayoutStore layout = new LayoutStore(config.dataDir());
         layout.load();
         web = new WebServer(config.server());
-        // Login, users and the logged-in viewer come with the next M9 steps; until then every viewer is anonymous.
+        // Users, roles and the logged-in viewer come with the next M9 step; until then every viewer is anonymous.
         sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
                 web.trustedProxies());
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
+        LocalLogin.Settings localSettings = LocalLogin.settings(config.auth());
+        new LoginPage(sites, sessions,
+                new LocalLogin(localSettings.enabled(), localSettings.credentials(), new LoginRateLimiter()),
+                web.trustedProxies()).register(web);
         new StatusPage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
                 registry::get, status::status, request -> Viewer.ANONYMOUS, uptime, config.dashboard())
                 .register(web);
