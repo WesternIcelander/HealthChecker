@@ -2,6 +2,7 @@ package io.siggi.healthchecker.schedule;
 
 import io.siggi.healthchecker.api.CheckResult;
 import io.siggi.healthchecker.status.CheckRecord;
+import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 
 import java.lang.System.Logger;
@@ -19,6 +20,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -59,7 +61,49 @@ public final class CheckScheduler implements AutoCloseable {
     private final ScheduledExecutorService timer;
     private final Map<String, Task> tasks = new HashMap<>();
     private final Listener listener = new Listener();
+    private final List<CheckListener> checkListeners = new CopyOnWriteArrayList<>();
     private boolean closed;
+
+    /** Gets every recorded check result, e.g. to write history. */
+    public interface CheckListener {
+        /**
+         * Called after a result was recorded in the {@link StatusRegistry}, in order per
+         * endpoint, on the thread that recorded it.
+         *
+         * @param change the state change the result caused, or {@code null}
+         */
+        void checked(String endpointId, CheckRecord check, StateChange change);
+
+        /** Called when an endpoint stops being checked with its current checker (replaced or removed). */
+        default void stopped(String endpointId) {
+        }
+    }
+
+    /** Adds a listener for recorded results; add it before {@link #start()} to miss nothing. */
+    public void addCheckListener(CheckListener listener) {
+        checkListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    private void record(String endpointId, CheckRecord check) {
+        StateChange change = status.record(endpointId, check).orElse(null);
+        for (CheckListener l : checkListeners) {
+            try {
+                l.checked(endpointId, check, change);
+            } catch (RuntimeException e) {
+                logger.log(Level.ERROR, "Check listener failed for " + endpointId, e);
+            }
+        }
+    }
+
+    private void fireStopped(String endpointId) {
+        for (CheckListener l : checkListeners) {
+            try {
+                l.stopped(endpointId);
+            } catch (RuntimeException e) {
+                logger.log(Level.ERROR, "Check listener failed for " + endpointId, e);
+            }
+        }
+    }
 
     public CheckScheduler(EndpointRegistry registry, StatusRegistry status) {
         this(registry, status, Clock.systemUTC(), DEFAULT_GRACE, DEFAULT_MAX_START_JITTER, Duration.ofSeconds(1),
@@ -158,6 +202,7 @@ public final class CheckScheduler implements AutoCloseable {
                     return;
                 }
                 status.remove(old.id());
+                fireStopped(old.id());
                 status.register(now.id(), now.failureThreshold());
                 startTask(now);
             }
@@ -169,6 +214,7 @@ public final class CheckScheduler implements AutoCloseable {
                 Task t = tasks.remove(old.id());
                 if (t != null) t.stop(true);
                 status.remove(old.id());
+                fireStopped(old.id());
             }
         }
     }
@@ -231,7 +277,7 @@ public final class CheckScheduler implements AutoCloseable {
                 Endpoint ep = endpoint;
                 if (running != null) {
                     if (running.timedOut) {
-                        status.record(ep.id(), new CheckRecord(clock.instant(), Duration.ZERO,
+                        record(ep.id(), new CheckRecord(clock.instant(), Duration.ZERO,
                                 CheckResult.fail("skipped, previous check still stuck")));
                     }
                     return;
@@ -265,7 +311,7 @@ public final class CheckScheduler implements AutoCloseable {
                 if (running == run) running = null;
                 if (run.watchdog != null) run.watchdog.cancel(false);
                 if (!run.timedOut && !stopped) {
-                    status.record(ep.id(), record);
+                    record(ep.id(), record);
                 }
                 close = stopped;
             }
@@ -277,7 +323,7 @@ public final class CheckScheduler implements AutoCloseable {
                 if (running != run) return;
                 run.timedOut = true;
                 if (!stopped) {
-                    status.record(run.endpoint.id(), new CheckRecord(run.start.time(), run.start.elapsed(),
+                    record(run.endpoint.id(), new CheckRecord(run.start.time(), run.start.elapsed(),
                             CheckResult.fail("timeout after " + run.endpoint.timeout().toMillis() + " ms")));
                 }
                 run.thread.interrupt();

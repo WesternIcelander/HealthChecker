@@ -1,5 +1,6 @@
 package io.siggi.healthchecker;
 
+import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.ConfigLoadException;
@@ -39,16 +40,31 @@ public final class Main {
         }
     }
 
+    /** What {@code run} does once the daemon is up; returning stops it. */
+    interface Runner {
+        void running(Daemon daemon) throws InterruptedException;
+    }
+
+    /** Runs until the JVM shuts down (Ctrl-C, SIGTERM), then stops the daemon. */
+    static final Runner UNTIL_SHUTDOWN = daemon -> {
+        Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("HealthChecker-shutdown").unstarted(daemon::close));
+        daemon.awaitClose();
+    };
+
     static int execute(String[] args, PrintStream out, PrintStream err) {
+        return execute(args, out, err, UNTIL_SHUTDOWN);
+    }
+
+    static int execute(String[] args, PrintStream out, PrintStream err, Runner runner) {
         if (args.length == 0) {
-            return run(Path.of(DEFAULT_CONFIG), out, err);
+            return run(Path.of(DEFAULT_CONFIG), out, err, runner);
         }
         switch (args[0]) {
             case "run":
                 if (args.length > 2) {
                     return usage(err);
                 }
-                return run(Path.of(args.length == 2 ? args[1] : DEFAULT_CONFIG), out, err);
+                return run(Path.of(args.length == 2 ? args[1] : DEFAULT_CONFIG), out, err, runner);
             case "hash-password":
                 if (args.length != 1) {
                     return usage(err);
@@ -62,13 +78,13 @@ public final class Main {
             default:
                 // `java -jar HealthChecker.jar config.json` is shorthand for `run config.json`.
                 if (args.length == 1 && !args[0].startsWith("-")) {
-                    return run(Path.of(args[0]), out, err);
+                    return run(Path.of(args[0]), out, err, runner);
                 }
                 return usage(err);
         }
     }
 
-    static int run(Path configFile, PrintStream out, PrintStream err) {
+    static int run(Path configFile, PrintStream out, PrintStream err, Runner runner) {
         Config config;
         try {
             config = new ConfigLoader().load(configFile);
@@ -105,7 +121,19 @@ public final class Main {
             out.println("Loaded history of " + history.endpointIds().size() + " endpoint(s) from " + config.dataDir());
             out.println("Loaded " + configFile + ": " + config.endpoints().size() + " endpoint(s), "
                     + config.categories().size() + " categor" + (config.categories().size() == 1 ? "y" : "ies") + ".");
-            // Scheduling and the web server are started here in later milestones.
+            Daemon daemon;
+            try {
+                daemon = Daemon.start(config, plugins, history);
+            } catch (IOException | ConfigException e) {
+                err.println("Couldn't start: " + e.getMessage());
+                return EXIT_ERROR;
+            }
+            try (daemon) {
+                out.println("Listening on " + config.server().bind() + ":" + daemon.port());
+                runner.running(daemon);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             return EXIT_OK;
         }
     }

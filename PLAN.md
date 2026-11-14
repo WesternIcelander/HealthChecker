@@ -1073,7 +1073,7 @@ test list are build, docs or manual steps.
 - [x] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
 - [x] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
 - [x] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
-- [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
+- [x] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
 ### M9 — Sessions, built-in login, roles & permissions
 - [ ] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
@@ -1443,3 +1443,14 @@ them; see CLAUDE.md.
   case-sensitive substring of `version.name`. The version condition is checked before the player count; failures keep
   the status details, with messages `unexpected version` and `N players online, expected at least M`.
   `displayName()` is "Minecraft (Java Edition)"; `srv`'s spec has default `true`.
+- `run` now starts the service (needed by the M8 integration check): endpoints from the config are added to an
+  `EndpointRegistry`, `CheckScheduler` checks them, and each recorded result also goes to the `HistoryStore` through a
+  scheduler `CheckListener` (`stopped` on replace/remove → `stopMonitoring`); the history heartbeat runs; the web server
+  serves the main page, `/api/status` and the service pages, with every viewer anonymous until M9. It prints
+  `Listening on bind:port` and runs until the JVM shuts down; a basic shutdown hook closes web server, scheduler
+  (checkers) and history (final heartbeat). M16 extends that hook (notifications) and adds its tests. `Main.execute`
+  takes a `Runner` so tests can start and stop the daemon in-process.
+- MinecraftChecker integration check: `scripts/it-minecraft.sh` builds both projects (`mvn install` HealthChecker with
+  tests skipped, `mvn package` for the plugin), runs `FakeStatusServerMain` (test classes; prints its port and a free
+  port for HealthChecker) and the app jar against a generated config in a temp dir, polls `/api/status` until the
+  endpoint is UP, then stops HealthChecker with SIGTERM.
