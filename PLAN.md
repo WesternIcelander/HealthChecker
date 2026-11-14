@@ -1036,7 +1036,7 @@ test list are build, docs or manual steps.
 - [x] Add `.DS_Store` to `.gitignore`.
 - [x] Convert to multi-module: `HealthChecker-Parent` (root), `HealthChecker-API` (`api/`), `HealthChecker` (`app/`, move `Main`); shading in app only, Gson not relocated. Add Gson and JUnit 5 + surefire. **Tests:** a trivial smoke test so `mvn test` runs in both modules.
 - [x] `ConfigLoader`: server, dataDir, timezone, dashboard, defaults, sites, categories, endpoints (common fields incl. `id`, `category`, `reminders`), `${env:…}` substitution, collected error reporting. **Tests:** loading a full config; defaults applied; each validation rule; all errors reported together; env substitution and unresolved `${env:…}`.
-- [ ] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
+- [x] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
 
 ### M2 — Plugin API & loading
 - [ ] API module: `CheckPlugin` (incl. `displayName`, `settings`, `apiVersion`), `SettingSpec`, `Checker`, `CheckResult`, `EndpointConfig` (incl. `declareTarget`), `ConfigException` (with optional setting key). **Tests:** `CheckResult`/`SettingSpec` builders.
@@ -1192,3 +1192,10 @@ them; see CLAUDE.md.
 - `timezone` must be an IANA region id (`UTC` works; bare offsets don't). `dataDir` and
   `plugins.dir` are relative to the working directory.
 - Site hosts are lowercased, without ports; a wildcard is only allowed as a leading `*.`.
+- Command line: `[run] [config.json]` (default `config.json` in the working directory); a
+  single non-option argument is shorthand for `run <file>`. Config errors and warnings go
+  to stderr and `run` exits with status 1 on errors; bad arguments print usage and exit 2.
+  `hash-password` asks for the password twice via `Console.readPassword` and fails when
+  there's no console. Until later milestones, `run` only loads and validates the config.
+- `config.example.json` uses `${env:…}` for every secret, including client ids and the
+  password hash, so it loads only when those variables are set.

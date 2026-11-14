@@ -1,0 +1,94 @@
+{
+  "server": {
+    "port": 8080,
+    "bind": "0.0.0.0",
+    "publicBaseUrl": "https://status.example.com",
+    "trustedProxies": ["127.0.0.1"]
+  },
+  "dataDir": "data",
+  "timezone": "Atlantic/Reykjavik",
+  "plugins": { "dir": "plugins" },
+  "dashboard": {
+    "title": "Status",
+    "colors": { "yellowBelow": 100.0, "orangeBelow": 99.0, "redBelow": 95.0 }
+  },
+  "maintenance": {
+    "countsAsDowntime": false,
+    "maxLengthDays": 7,
+    "upcomingDays": 7
+  },
+  "defaults": {
+    "intervalSeconds": 30,
+    "timeoutMillis": 5000,
+    "failureThreshold": 1,
+    "visibility": "private",
+    "notify": ["ops-email", "discord"],
+    "reminders": [30, 60, 120]
+  },
+  "auth": {
+    "sessionDays": 7,
+    "local": { "enabled": true },
+    "roles": { "ops": ["view.private", "maintenance.manage", "events.annotate"] },
+    "users": [
+      { "id": "admin", "displayName": "Admin", "role": "admin",
+        "password": "${env:ADMIN_PASSWORD_HASH}",
+        "identities": ["google:110248495921238986420", "github:123456"] },
+      { "id": "jane", "displayName": "Jane", "role": "ops",
+        "identities": ["google:109876543210987654321"] }
+    ],
+    "rules": [
+      { "provider": "google", "emailDomain": "example.com", "role": "viewer" }
+    ],
+    "providers": [
+      { "id": "google", "type": "oidc", "label": "Google",
+        "issuer": "https://accounts.google.com",
+        "clientId": "${env:GOOGLE_CLIENT_ID}",
+        "clientSecret": "${env:GOOGLE_CLIENT_SECRET}",
+        "identifyBy": "sub" },
+      { "id": "github", "type": "oauth2", "label": "GitHub",
+        "authorizeUrl": "https://github.com/login/oauth/authorize",
+        "tokenUrl": "https://github.com/login/oauth/access_token",
+        "userinfoUrl": "https://api.github.com/user",
+        "scopes": ["read:user"], "idField": "id", "nameField": "login",
+        "clientId": "${env:GITHUB_CLIENT_ID}",
+        "clientSecret": "${env:GITHUB_CLIENT_SECRET}" }
+    ]
+  },
+  "notifications": {
+    "batchSeconds": 30,
+    "channels": {
+      "ops-email": { "type": "email", "baseUrl": "https://mail-api.example.com",
+                     "apiKey": "${env:SIMPLEMAILER_KEY}",
+                     "from": "HealthChecker <health@example.com>", "to": ["ops@example.com"] },
+      "discord": { "type": "discord", "webhookUrl": "${env:DISCORD_WEBHOOK}",
+                   "mention": "<@&123456789>" },
+      "mc-discord": { "type": "discord", "webhookUrl": "${env:MC_DISCORD_WEBHOOK}" }
+    }
+  },
+  "sites": [
+    { "hosts": ["mc-status.example.com"], "title": "Minecraft status",
+      "publicBaseUrl": "https://mc-status.example.com",
+      "categories": ["minecraft"] },
+    { "hosts": ["web-status.example.com"], "title": "Website status",
+      "publicBaseUrl": "https://web-status.example.com",
+      "endpoints": ["website"] }
+  ],
+  "categories": [
+    { "id": "web", "name": "Websites" },
+    { "id": "minecraft", "name": "Minecraft servers", "description": "Java Edition" },
+    { "id": "internal", "name": "Internal" }
+  ],
+  "endpoints": [
+    { "id": "website", "name": "Website", "type": "http", "category": "web",
+      "url": "https://example.com", "maxClass": 2,
+      "visibility": "public", "notify": ["ops-email"] },
+    { "id": "admin", "name": "Admin panel", "type": "http", "category": "internal",
+      "url": "http://10.0.0.5:8080", "maxClass": 4,
+      "intervalSeconds": 10, "notify": ["discord"], "reminders": [15, 30, 60, 120] },
+    { "id": "survival", "name": "Survival", "type": "minecraft", "category": "minecraft",
+      "host": "mc.example.com",
+      "visibility": "public-status", "notify": ["mc-discord", "ops-email"] },
+    { "id": "test-mc", "name": "Test server", "type": "minecraft", "category": "minecraft",
+      "host": "10.0.0.9", "port": 25566, "notify": false }
+  ]
+}
