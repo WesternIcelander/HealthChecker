@@ -1040,7 +1040,7 @@ test list are build, docs or manual steps.
 
 ### M2 — Plugin API & loading
 - [x] API module: `CheckPlugin` (incl. `displayName`, `settings`, `apiVersion`), `SettingSpec`, `Checker`, `CheckResult`, `EndpointConfig` (incl. `declareTarget`), `ConfigException` (with optional setting key). **Tests:** `CheckResult`/`SettingSpec` builders.
-- [ ] `EndpointConfig` implementation over `JsonObject` with unknown-key detection. **Tests:** typed getters; missing required key; wrong type; unread keys reported.
+- [x] `EndpointConfig` implementation over `JsonObject` with unknown-key detection. **Tests:** typed getters; missing required key; wrong type; unread keys reported.
 - [ ] `PluginManager`: built-ins + `plugins/*.jar`, duplicate/unknown type errors, version check. **Tests:** load a test plugin jar built during the test from a temp dir (using Gson from the parent loader); duplicate types; unknown type message lists available types; too-new API rejected.
 
 ### M3 — Built-in `http` check
@@ -1207,3 +1207,9 @@ them; see CLAUDE.md.
   values other than `String`/`Number`/`Boolean`. `EndpointConfig` getters throw
   `ConfigException` (with the key) for missing or wrongly typed values.
   `ConfigException.settingKey()` returns an `Optional<String>`.
+- `JsonEndpointConfig` (app, package `plugin`): JSON `null` counts as absent; types are strict
+  (no string-to-number/boolean conversion; integers must be whole and within `int` range,
+  so `1e3` is fine but `1.5` and `"5"` aren't). Any getter call marks its key as read, even
+  when it then fails on the type; `keys()` doesn't. `checkNoUnreadKeys()` reports every
+  unread key in one `ConfigException` ("unknown setting(s) …") whose setting key is the
+  first one. Declared targets are kept in order without duplicates.
