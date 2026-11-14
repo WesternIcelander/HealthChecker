@@ -326,8 +326,9 @@ public final class ConfigLoader {
             boolean counts = s.bool("countsAsDowntime", false);
             int maxLengthDays = s.integer("maxLengthDays", 7, 1, 366);
             int upcomingDays = s.integer("upcomingDays", 7, 1, 366);
+            int announceBeforeHours = s.integer("announceBeforeHours", 0, 0, 720);
             s.rejectUnknownKeys();
-            return new MaintenanceSettings(counts, maxLengthDays, upcomingDays);
+            return new MaintenanceSettings(counts, maxLengthDays, upcomingDays, announceBeforeHours);
         }
 
         private JsonObject rawObject(String key) {

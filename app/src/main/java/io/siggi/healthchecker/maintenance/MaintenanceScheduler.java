@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -41,6 +42,23 @@ import java.util.function.Supplier;
  * <p>Thread-safe.
  */
 public final class MaintenanceScheduler implements AutoCloseable {
+    /**
+     * Told what a tick changed (notifications). Called on the ticking thread under the scheduler's lock,
+     * after the {@link StatusRegistry} and {@link HistoryStore} were updated. Exceptions are logged.
+     */
+    public interface Listener {
+        /**
+         * An endpoint moved from window {@code fromWindowId} to {@code toWindowId} (either may be
+         * {@code null}: it entered or left maintenance) at {@code at}.
+         */
+        default void endpointChanged(String endpointId, String fromWindowId, String toWindowId, Instant at) {
+        }
+
+        /** A tick at {@code now} has been applied. */
+        default void ticked(Instant now) {
+        }
+    }
+
     /** Longest time between two ticks. */
     public static final Duration MAX_TICK_INTERVAL = Duration.ofSeconds(30);
 
@@ -51,6 +69,7 @@ public final class MaintenanceScheduler implements AutoCloseable {
     private final Clock clock;
     private final Logger logger;
     private final Runnable storeListener = this::tickSoon;
+    private final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
     /** Endpoint id → window it's in. */
     private final Map<String, MaintenanceWindow> active = new HashMap<>();
@@ -135,7 +154,26 @@ public final class MaintenanceScheduler implements AutoCloseable {
             } else {
                 active.put(endpointId, neu);
             }
+            for (Listener l : listeners) {
+                try {
+                    l.endpointChanged(endpointId, oldId, newId, at);
+                } catch (RuntimeException e) {
+                    logger.log(Level.ERROR, "Maintenance listener failed for " + endpointId, e);
+                }
+            }
         }
+        for (Listener l : listeners) {
+            try {
+                l.ticked(now);
+            } catch (RuntimeException e) {
+                logger.log(Level.ERROR, "Maintenance listener failed", e);
+            }
+        }
+    }
+
+    /** Adds a listener for the changes ticks make. Add listeners before {@link #start()}. */
+    public void addListener(Listener listener) {
+        listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     /**

@@ -43,7 +43,7 @@ class ConfigLoaderTest {
                 "title": "Status ${env:TITLE_SUFFIX}",
                 "colors": { "yellowBelow": 100.0, "orangeBelow": 98.5, "redBelow": 90 }
               },
-              "maintenance": { "countsAsDowntime": true, "maxLengthDays": 3, "upcomingDays": 14 },
+              "maintenance": { "countsAsDowntime": true, "maxLengthDays": 3, "upcomingDays": 14, "announceBeforeHours": 24 },
               "defaults": {
                 "intervalSeconds": 60, "timeoutMillis": 4000, "failureThreshold": 2,
                 "visibility": "public-status",
@@ -139,7 +139,7 @@ class ConfigLoaderTest {
         assertEquals(98.5, c.dashboard().orangeBelow());
         assertEquals(90.0, c.dashboard().redBelow());
 
-        assertEquals(new MaintenanceSettings(true, 3, 14), c.maintenance());
+        assertEquals(new MaintenanceSettings(true, 3, 14, 24), c.maintenance());
         assertEquals(new EndpointDefaults(60, 4000, 2, Visibility.PUBLIC_STATUS,
                 List.of("ops-email", "discord"), List.of(10, 20), 240), c.defaults());
 
@@ -329,6 +329,8 @@ class ConfigLoaderTest {
         assertSingleError("{ \"maintenance\": { \"countsAsDowntime\": \"yes\" } }",
                 "maintenance.countsAsDowntime: must be true or false");
         assertSingleError("{ \"maintenance\": { \"maxLengthDays\": 0 } }", "maintenance.maxLengthDays: must be between 1");
+        assertSingleError("{ \"maintenance\": { \"announceBeforeHours\": -1 } }",
+                "maintenance.announceBeforeHours: must be between 0");
     }
 
     @Test

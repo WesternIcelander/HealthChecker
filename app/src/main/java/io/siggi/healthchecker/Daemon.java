@@ -15,12 +15,14 @@ import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryEvent;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.UptimeCalculator;
+import io.siggi.healthchecker.maintenance.MaintenanceAnnouncer;
 import io.siggi.healthchecker.maintenance.MaintenanceScheduler;
 import io.siggi.healthchecker.maintenance.MaintenanceStore;
+import io.siggi.healthchecker.maintenance.MaintenanceWindow;
 import io.siggi.healthchecker.notify.DiscordNotifier;
-import io.siggi.healthchecker.notify.Notification;
 import io.siggi.healthchecker.notify.NotificationConfig;
 import io.siggi.healthchecker.notify.NotificationDispatcher;
+import io.siggi.healthchecker.notify.OutageAlerts;
 import io.siggi.healthchecker.notify.ReminderScheduler;
 import io.siggi.healthchecker.notify.TaskScheduler;
 import io.siggi.healthchecker.plugin.PluginManager;
@@ -30,6 +32,7 @@ import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.schedule.EndpointFactory;
 import io.siggi.healthchecker.schedule.EndpointRegistry;
 import io.siggi.healthchecker.status.CheckRecord;
+import io.siggi.healthchecker.status.EndpointStatus;
 import io.siggi.healthchecker.status.State;
 import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
@@ -53,6 +56,8 @@ import io.siggi.healthchecker.web.site.SiteResolver;
 
 import java.io.IOException;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -79,6 +84,7 @@ final class Daemon implements AutoCloseable {
     private final SessionManager sessions;
     private final NotificationDispatcher notifications;
     private final ReminderScheduler reminders;
+    private final OutageAlerts alerts;
     private final SiteResolver sites;
     private final LayoutStore layout;
     private final CountDownLatch closed = new CountDownLatch(1);
@@ -110,7 +116,7 @@ final class Daemon implements AutoCloseable {
             public void stopped(String endpointId, CheckScheduler.StopReason reason) {
                 history.stopMonitoring(endpointId, reason == CheckScheduler.StopReason.REPLACED);
                 // A removed or replaced endpoint's outage is over (endedUnobserved / endedByConfigChange).
-                reminders.cancel(endpointId);
+                alerts.forget(endpointId);
             }
         });
         // Remember every target an endpoint has had, so its history stays leak-filtered after edits.
@@ -177,11 +183,30 @@ final class Daemon implements AutoCloseable {
         NotificationConfig notificationConfig = NotificationConfig.parse(config.notifications());
         notifications = NotificationDispatcher.create(notificationConfig.notifiers(DiscordNotifier.httpClient()),
                 notificationConfig.batchWindow());
-        reminders = new ReminderScheduler(ReminderScheduler.stateFile(config.dataDir()), id -> registry.get(id)
+        ReminderScheduler.Source targets = id -> registry.get(id)
                 .map(e -> new ReminderScheduler.Target(e.definition(), failureMessage(id),
-                        link(id, history.openEvent(id).map(HistoryEvent::id).orElse(null)))),
+                        link(id, history.openEvent(id).map(HistoryEvent::id).orElse(null))));
+        // No reminders during maintenance, also none restored after a restart.
+        reminders = new ReminderScheduler(ReminderScheduler.stateFile(config.dataDir()),
+                id -> status.maintenanceWindow(id).isPresent() ? Optional.empty() : targets.lookup(id),
                 notifications::notify, TaskScheduler.create(), clock,
                 System.getLogger(ReminderScheduler.class.getName()));
+        alerts = new OutageAlerts(notifications::notify, reminders, targets, id -> status.status(id)
+                .map(EndpointStatus::checkState).orElse(State.UNKNOWN) == State.DOWN);
+        maintenanceScheduler.addListener(new MaintenanceScheduler.Listener() {
+            @Override
+            public void endpointChanged(String endpointId, String fromWindowId, String toWindowId,
+                                        Instant at) {
+                alerts.maintenanceChanged(endpointId, fromWindowId, toWindowId, at);
+            }
+        });
+        maintenanceScheduler.addListener(new MaintenanceAnnouncer(maintenance,
+                Duration.ofHours(config.maintenance().announceBeforeHours()), config.timezone(), this::affectedNames,
+                id -> absolute(sites.defaultSite().link("/maintenance/" + id)), (channels, n) -> {
+                    // A channel removed from the config since the window was saved is skipped.
+                    List<String> known = channels.stream().filter(notifications.channels()::contains).toList();
+                    if (!known.isEmpty()) notifications.send(known, n);
+                }, clock.instant()));
         sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
                 web.trustedProxies());
         UserDirectory users = UserDirectory.parse(config.auth());
@@ -251,10 +276,11 @@ final class Daemon implements AutoCloseable {
             }
             daemon.endpoints.addChangeListener(daemon::applyEndpointChanges);
             daemon.history.startHeartbeat();
+            // Windows in progress are applied before the first check is recorded, and before reminders are
+            // restored (none for endpoints in maintenance).
+            daemon.maintenanceScheduler.start();
             // Pending reminders from before a restart; overdue ones are sent once.
             daemon.reminders.load();
-            // Windows in progress are applied before the first check is recorded.
-            daemon.maintenanceScheduler.start();
             daemon.scheduler.start();
             daemon.web.start();
         } catch (IOException | ConfigException | RuntimeException e) {
@@ -277,18 +303,34 @@ final class Daemon implements AutoCloseable {
                         + " restart: " + e.getMessage()));
     }
 
-    /** Queues the down/recovered notification a state change causes, and starts or cancels reminders. */
+    /**
+     * Queues the down/recovered notification a state change causes, and starts or cancels reminders
+     * (nothing during maintenance).
+     */
     private void notifyChange(StateChange change, String eventBefore) {
         String id = change.endpointId();
         Optional<Endpoint> endpoint = registry.get(id);
-        if (endpoint.isPresent()) {
-            // A recovery links to the event it just closed, a down notification to the one it opened.
-            String eventId = change.to() == State.DOWN
-                    ? history.openEvent(id).map(HistoryEvent::id).orElse(null) : eventBefore;
-            Notification.forChange(endpoint.get().definition(), change, link(id, eventId))
-                    .ifPresent(n -> notifications.notify(endpoint.get().definition(), n));
+        // A recovery links to the event it just closed, a down notification to the one it opened.
+        String eventId = change.to() == State.DOWN
+                ? history.openEvent(id).map(HistoryEvent::id).orElse(null) : eventBefore;
+        alerts.onStateChange(endpoint.map(Endpoint::definition).orElse(null), change,
+                endpoint.isPresent() ? link(id, eventId) : null);
+    }
+
+    /** Names of the services a maintenance window covers now (by id, or by category in the effective layout). */
+    private List<String> affectedNames(MaintenanceWindow window) {
+        Map<String, String> names = new HashMap<>();
+        endpoints.definitions().forEach(d -> names.put(d.id(), d.name()));
+        List<String> result = new ArrayList<>();
+        for (ResolvedLayout.Category c : layout.resolve(endpoints.categoryConfigs(), endpoints.definitions())
+                .categories()) {
+            for (String id : c.endpointIds()) {
+                if (window.affects(id, c.isOther() ? null : c.id()) && names.containsKey(id)) {
+                    result.add(names.get(id));
+                }
+            }
         }
-        reminders.onStateChange(change);
+        return result;
     }
 
     /** The latest failure message of the endpoint's ongoing outage, else of its last check. */
@@ -304,7 +346,10 @@ final class Daemon implements AutoCloseable {
      */
     private String link(String endpointId, String eventId) {
         Site site = sites.siteFor(endpointId, layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()));
-        String link = site.link("/service/" + endpointId + (eventId == null ? "" : "/event/" + eventId));
+        return absolute(site.link("/service/" + endpointId + (eventId == null ? "" : "/event/" + eventId)));
+    }
+
+    private static String absolute(String link) {
         return link.startsWith("https://") || link.startsWith("http://") ? link : null;
     }
 

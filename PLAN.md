@@ -887,7 +887,7 @@ HTTP. It is not a library dependency.
     "colors": { "yellowBelow": 100.0, "orangeBelow": 99.0, "redBelow": 95.0 }
   },
   "maintenance": {
-    "countsAsDowntime": false, "maxLengthDays": 7, "upcomingDays": 7
+    "countsAsDowntime": false, "maxLengthDays": 7, "upcomingDays": 7, "announceBeforeHours": 24
   },
   "defaults": {
     "intervalSeconds": 30, "timeoutMillis": 5000, "failureThreshold": 1,
@@ -1112,7 +1112,7 @@ test list are build, docs or manual steps.
 - [x] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
 - [x] Reminders: schedule from outage start per `reminders` (+ optional `reminderRepeatMinutes`); cancel on recovery; persisted in `data/notifications/state.json`; overdue-after-restart sent once. **Tests:** with a fake clock: reminders at 30/60/120 and none after; none after recovery; repeat interval; restart mid-outage sends the overdue one once.
 - [x] `DiscordNotifier`: embeds (down/reminder/recovered), splitting, `allowed_mentions`, 429 handling; "Send test notification" (`notifications.test`). **Tests:** fake webhook server: payload shape; >10 embeds split; mention only on down/reminder; 429 then success; 4xx permanent; test button requires permission.
-- [ ] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
+- [x] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
 
 ### M15 — Email via SimpleMailer
 - [ ] `EmailNotifier`: `POST /v1/messages`, stable UUID per notification across retries, response-code handling; text + HTML bodies, subject summary, event permalink. **Tests:** fake SimpleMailer API: 202; retry after 503 reuses the same id; 401 and 400 permanent; payload shape; HTML escaping of endpoint names and messages.
@@ -1911,3 +1911,22 @@ them; see CLAUDE.md.
   an unknown channel is `400`; 5 tests per user per minute (`429` + `Retry-After`). It queues the test with
   `NotificationDispatcher.sendNow` (its own batch, no batch window, same retry rules), then `303` to the list with a
   "queued" notice. The main page shows a "Notifications" link to users with `notifications.test`. Tests aren't audited.
+- Maintenance and notifications (app, `notify.OutageAlerts`, `maintenance.MaintenanceAnnouncer`): `MaintenanceScheduler`
+  listeners hear, per tick, every endpoint entering or leaving a window (with the transition time) and the tick itself.
+  `OutageAlerts` sits between state changes and the dispatcher/reminders: while an endpoint is in a window, changes
+  send nothing and start no reminders; entering a window cancels pending reminders (and the reminder source returns
+  nothing for endpoints in maintenance, so none are restored after a restart: the scheduler now starts before
+  reminders are loaded). Leaving a window while the checks say DOWN sends a down notification at once, with the
+  outage starting at the window's end ("End now": at that moment), and starts reminders from there; a DOWN change
+  racing that is not sent twice. A recovery is only sent for an outage a down notification went out for, and gives
+  that outage's start. `maintenance.announceBeforeHours` (whole number 0–720, default 0 = off) is a global setting,
+  not per window. Announcements (`Kind.ANNOUNCEMENT`, title "Maintenance scheduled/Upcoming maintenance/Maintenance
+  started/ended/cancelled: {title}", text with the time range in the configured timezone, the affected service names
+  and, for created/upcoming, the description; link to `/maintenance/{id}` on the default site when absolute) go only
+  to the window's `notifyChannels` via `NotificationDispatcher.send` (channels since removed from the config are
+  skipped). They're checked on every scheduler tick, so "upcoming" may be up to 30 s late. Each goes out once and
+  only for things that happen while the app runs (event time at or after startup and at most 1 h before the tick;
+  in memory, nothing persisted), so a restart neither repeats nor catches up announcements. A series is announced
+  when created and cancelled; its occurrences get upcoming/started/ended; skipping or editing a single occurrence
+  isn't announced. "Upcoming" is left out when the window was created after that moment; a window created and
+  cancelled between two ticks isn't announced at all.

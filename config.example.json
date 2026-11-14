@@ -15,7 +15,8 @@
   "maintenance": {
     "countsAsDowntime": false,
     "maxLengthDays": 7,
-    "upcomingDays": 7
+    "upcomingDays": 7,
+    "announceBeforeHours": 24
   },
   "defaults": {
     "intervalSeconds": 30,
