@@ -41,6 +41,20 @@ class MainTest {
     }
 
     @Test
+    void runReportsUnknownEndpointTypes(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("config.json");
+        String pluginsDir = dir.resolve("plugins").toString().replace("\\", "\\\\");
+        Files.writeString(config, """
+                { "plugins": { "dir": "%s" },
+                  "endpoints": [ { "id": "survival", "name": "Survival", "type": "minecraft", "host": "x" } ] }
+                """.formatted(pluginsDir));
+        assertEquals(Main.EXIT_ERROR, execute("run", config.toString()));
+        String errText = errBytes.toString(StandardCharsets.UTF_8);
+        assertTrue(errText.contains("1 configuration error:"), errText);
+        assertTrue(errText.contains("endpoints[0] \"survival\": unknown type \"minecraft\" (available: "), errText);
+    }
+
+    @Test
     void runReportsMissingFile(@TempDir Path dir) {
         assertEquals(Main.EXIT_ERROR, execute("run", dir.resolve("missing.json").toString()));
         assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("file not found"));

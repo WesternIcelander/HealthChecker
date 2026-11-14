@@ -4,6 +4,8 @@ import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.ConfigLoadException;
 import io.siggi.healthchecker.config.ConfigLoader;
+import io.siggi.healthchecker.plugin.PluginLoadException;
+import io.siggi.healthchecker.plugin.PluginManager;
 
 import java.io.Console;
 import java.io.PrintStream;
@@ -74,10 +76,28 @@ public final class Main {
             return EXIT_ERROR;
         }
         printWarnings(config.warnings(), err);
-        out.println("Loaded " + configFile + ": " + config.endpoints().size() + " endpoint(s), "
-                + config.categories().size() + " categor" + (config.categories().size() == 1 ? "y" : "ies") + ".");
-        // Plugins, scheduling and the web server are started here in later milestones.
-        return EXIT_OK;
+        PluginManager plugins;
+        try {
+            plugins = PluginManager.load(config.pluginsDir());
+        } catch (PluginLoadException e) {
+            err.println(config.pluginsDir() + ": " + e.getMessage());
+            return EXIT_ERROR;
+        }
+        try (plugins) {
+            printWarnings(plugins.warnings(), err);
+            for (PluginManager.LoadedPlugin p : plugins.plugins()) {
+                out.println("Loaded plugin " + p.describe());
+            }
+            List<String> endpointErrors = plugins.validateEndpoints(config.endpoints());
+            if (!endpointErrors.isEmpty()) {
+                err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
+                return EXIT_ERROR;
+            }
+            out.println("Loaded " + configFile + ": " + config.endpoints().size() + " endpoint(s), "
+                    + config.categories().size() + " categor" + (config.categories().size() == 1 ? "y" : "ies") + ".");
+            // Scheduling and the web server are started here in later milestones.
+            return EXIT_OK;
+        }
     }
 
     static int hashPassword(Console console, PrintStream out, PrintStream err) {

@@ -1041,7 +1041,7 @@ test list are build, docs or manual steps.
 ### M2 — Plugin API & loading
 - [x] API module: `CheckPlugin` (incl. `displayName`, `settings`, `apiVersion`), `SettingSpec`, `Checker`, `CheckResult`, `EndpointConfig` (incl. `declareTarget`), `ConfigException` (with optional setting key). **Tests:** `CheckResult`/`SettingSpec` builders.
 - [x] `EndpointConfig` implementation over `JsonObject` with unknown-key detection. **Tests:** typed getters; missing required key; wrong type; unread keys reported.
-- [ ] `PluginManager`: built-ins + `plugins/*.jar`, duplicate/unknown type errors, version check. **Tests:** load a test plugin jar built during the test from a temp dir (using Gson from the parent loader); duplicate types; unknown type message lists available types; too-new API rejected.
+- [x] `PluginManager`: built-ins + `plugins/*.jar`, duplicate/unknown type errors, version check. **Tests:** load a test plugin jar built during the test from a temp dir (using Gson from the parent loader); duplicate types; unknown type message lists available types; too-new API rejected.
 
 ### M3 — Built-in `http` check
 - [ ] `HttpCheckPlugin`: shared `HttpClient`, `Redirect.NEVER`, timeout, `maxClass` rule, URL validation, declared targets. **Tests:** against a local SiggiHTTP server, the 200/301/404/503 × `maxClass` 2–5 matrix; refused and timeout always fail; redirect not followed; `maxClass` 1 and 6 rejected; invalid URLs (path, query, scheme) rejected.
@@ -1213,3 +1213,12 @@ them; see CLAUDE.md.
   when it then fails on the type; `keys()` doesn't. `checkNoUnreadKeys()` reports every
   unread key in one `ConfigException` ("unknown setting(s) …") whose setting key is the
   first one. Declared targets are kept in order without duplicates.
+- `PluginManager` (app, package `plugin`): the app's plugin API version is
+  `PluginManager.API_VERSION` (1). A missing plugins directory means no plugins; a path that
+  isn't a directory is an error. Jars load in file-name order, each only contributing the
+  providers its own loader defines (services files the parent also sees are skipped). A jar
+  without any `CheckPlugin` is a warning. Plugin types must match `[a-z0-9-]+`. All loading
+  problems are collected and reported together; jar class loaders stay open until shutdown.
+  `run` loads plugins after the config, logs each one, then validates every endpoint (known
+  type, the plugin's `create()`, no unread settings; the checker is closed again) and reports
+  those failures as configuration errors in the `endpoints[i] "id": …` format.
