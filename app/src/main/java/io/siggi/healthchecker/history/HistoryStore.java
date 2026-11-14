@@ -340,6 +340,34 @@ public final class HistoryStore implements AutoCloseable {
         heartbeat();
     }
 
+    // ---- editing ----
+
+    /**
+     * Sets an event's custom title ({@code null} resets it to the default) and writes its events
+     * file before returning. On a write error the change is undone and the error thrown.
+     *
+     * @return the updated event, or empty when the endpoint has no event with that id
+     * @throws IOException if the events file couldn't be written
+     */
+    public synchronized Optional<HistoryEvent> rename(String endpointId, String eventId, String title) throws IOException {
+        EndpointHistory h = histories.get(endpointId);
+        HistoryEvent old = h == null ? null : h.find(eventId);
+        if (old == null) {
+            return Optional.empty();
+        }
+        HistoryEvent updated = old.withTitle(title);
+        h.replace(updated);
+        int year = yearOf(updated.start());
+        try {
+            writeYear(h, year);
+        } catch (IOException | RuntimeException e) {
+            h.replace(old); // stays marked dirty, so the heartbeat writes the old state again
+            throw e;
+        }
+        h.dirtyYears.remove(year);
+        return Optional.of(updated);
+    }
+
     // ---- reading ----
 
     /** Ids of every endpoint with stored or recorded history. */

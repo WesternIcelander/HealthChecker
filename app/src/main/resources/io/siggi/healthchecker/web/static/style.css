@@ -613,3 +613,28 @@ h2.day-title { font-size: 1.4rem; }
 .layout-editor:not(.le-ready) .le-controls,
 .layout-editor:not(.le-ready) .le-grip,
 .layout-editor:not(.le-ready) .le-actions button { display: none; }
+
+/* ---- event edits ---- */
+
+.rename-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0; font-size: 0.9rem; }
+.rename-form label { font-weight: 600; }
+.rename-form input[type="text"] {
+  font: inherit;
+  flex: 1 1 14em;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.rename-form button {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.rename-help { flex-basis: 100%; }

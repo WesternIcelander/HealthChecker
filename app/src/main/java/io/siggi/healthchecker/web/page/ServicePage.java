@@ -92,6 +92,7 @@ public final class ServicePage {
     private final HistoryStore history;
     private final Clock clock;
     private final DashboardConfig dashboard;
+    private final EventEditor editor;
     private final ViewFilter filter = new ViewFilter();
 
     /**
@@ -103,6 +104,20 @@ public final class ServicePage {
                        Function<String, Optional<EndpointStatus>> statuses,
                        Function<HTTPRequest, Viewer> viewers,
                        UptimeCalculator uptime, HistoryStore history, Clock clock, DashboardConfig dashboard) {
+        this(sites, layout, endpoints, statuses, viewers, uptime, history, clock, dashboard, null);
+    }
+
+    /**
+     * As above, plus the event editor (rename and note forms and their POSTs), or {@code null}
+     * for none.
+     */
+    public ServicePage(SiteResolver sites, Supplier<ResolvedLayout> layout,
+                       Function<String, Optional<Endpoint>> endpoints,
+                       Function<String, Optional<EndpointStatus>> statuses,
+                       Function<HTTPRequest, Viewer> viewers,
+                       UptimeCalculator uptime, HistoryStore history, Clock clock, DashboardConfig dashboard,
+                       EventEditor editor) {
+        this.editor = editor;
         this.sites = sites;
         this.layout = layout;
         this.endpoints = endpoints;
@@ -124,8 +139,11 @@ public final class ServicePage {
         return uptime.today();
     }
 
-    /** A service the request may see: its site, the viewer, the endpoint and its filtered view. */
-    record Service(Site site, Viewer viewer, Endpoint endpoint, EndpointView view) {
+    /**
+     * A service the request may see: its site, the viewer, the endpoint and its filtered view, and
+     * whether the viewer may annotate its events (rename them, edit notes).
+     */
+    record Service(Site site, Viewer viewer, Endpoint endpoint, EndpointView view, boolean annotate) {
     }
 
     /** What the header shows. */
@@ -352,7 +370,11 @@ public final class ServicePage {
         }
         Viewer viewer = viewers.apply(request);
         Optional<EndpointView> view = filter.endpoint(viewer, endpoint.get(), statuses.apply(id).orElse(null));
-        return view.map(v -> new Service(site.get(), viewer, endpoint.get(), v));
+        if (view.isEmpty()) {
+            return Optional.empty();
+        }
+        boolean annotate = editor != null && editor.canAnnotate(request);
+        return Optional.of(new Service(site.get(), viewer, endpoint.get(), view.get(), annotate));
     }
 
     /** The header for the service, or empty when the request must get a {@code 404} (see {@link #service}). */
@@ -415,6 +437,10 @@ public final class ServicePage {
             eventPage(request, parts[0], parts[2]);
         } else if (parts.length == 3 && parts[1].equals("day")) {
             dayPage(request, parts[0], parts[2]);
+        } else if (parts.length == 4 && parts[1].equals("event") && parts[3].equals("title") && editor != null) {
+            Optional<Service> found = service(request, parts[0]);
+            if (found.isEmpty() || event(found.get(), parts[2]).isEmpty()) return; // nothing written → 404
+            editor.rename(request, found.get(), parts[2]);
         }
         // Anything else: nothing written → 404.
     }
@@ -476,6 +502,10 @@ public final class ServicePage {
         failureFacts(html, e);
         html.append("</dl>\n");
         flagsHtml(html, e);
+        if (service.annotate()) {
+            editor.renameForm(html, site, service.endpoint().id(), service.endpoint().name(), e.id(),
+                    service.viewer().csrfToken(), PREFIX + service.view().id() + "/event/" + e.id());
+        }
         html.append("<h3 class=\"notes-title\">Notes</h3>\n");
         notesHtml(html, e.notes());
         html.append("</article>\n");
@@ -674,6 +704,10 @@ public final class ServicePage {
                 html.append("</dl>\n");
             }
             flagsHtml(html, e);
+            if (service.annotate()) {
+                editor.renameForm(html, site, service.endpoint().id(), service.endpoint().name(), e.id(),
+                        service.viewer().csrfToken(), servicePath + "?view=list&page=" + page.page() + "#event-" + e.id());
+            }
             notesHtml(html, e.notes());
             html.append("<p class=\"event-link\"><a href=\"")
                     .append(Html.escape(site.link(servicePath + "/event/" + e.id()))).append("\">Permalink</a></p>\n")

@@ -1083,7 +1083,7 @@ test list are build, docs or manual steps.
 
 ### M10 — Dashboard editing: layout, event titles & notes
 - [x] Layout editor on the main page (drag and drop plus up/down buttons and category dropdown; private services with visibility markers) and `POST /admin/layout` (CSRF, version check → 409, "Reset to config order", atomic write). **Tests:** save and reload; move service between categories; reorder categories incl. "Other"; conflicting save gets 409; no `layout.edit` → 403; unknown ids rejected; reset restores config order.
-- [ ] Rename event (empty = reset to default). **Tests:** rename visible publicly; reset; no `events.annotate` → 403.
+- [x] Rename event (empty = reset to default). **Tests:** rename visible publicly; reset; no `events.annotate` → 403.
 - [ ] Notes: add / edit / delete; public/private toggle; author and timestamps; length limit; forms in list view, event page and day popover; all POST + CSRF; persisted before responding. **Tests:** private note hidden from anonymous in HTML and JSON; edits survive restart; HTML escaping of note text; length limit.
 
 ### M11 — Endpoint & category management in the dashboard
@@ -1527,3 +1527,13 @@ them; see CLAUDE.md.
   so versions never go back and an editor opened before the reset still gets `409`. Saves are serialized in
   `LayoutStore`, written with `AtomicFiles`; leftover `.layout.json.*.tmp` files are removed at load. After a save
   the editor returns to the main page; on `409` it offers "Reload".
+- Event rename (app, `web.page.EventEditor`, wired into `ServicePage`; `HistoryStore.rename`): a plain form POST to
+  `/service/{id}/event/{eventId}/title` with `title`, `csrf` and `next`. The service page's `404` rules come first (also
+  for the event: unknown, of another endpoint, or not visible), then `events.annotate` (`303` to `/login` for anonymous
+  visitors, `403` otherwise), then CSRF. The title is trimmed; empty means reset (stored as `null`); more than 200
+  characters (code points) or any control character is `400`. `HistoryStore.rename` rewrites the event's year file
+  synchronously and undoes the in-memory change if that fails (`500`), so the change is on disk before the `303` to
+  `next` (checked like the login's `next`; without one, the event permalink). The rename form is shown in the list
+  view and on the permalink page to users with `events.annotate`, prefilled with the stored custom title (also for
+  users without `view.private`, who may rename anyway) and the default title as placeholder; the list returns to the
+  same page and event. The audit entry comes with `AuditLog` (M11).
