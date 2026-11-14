@@ -1044,7 +1044,7 @@ test list are build, docs or manual steps.
 - [x] `PluginManager`: built-ins + `plugins/*.jar`, duplicate/unknown type errors, version check. **Tests:** load a test plugin jar built during the test from a temp dir (using Gson from the parent loader); duplicate types; unknown type message lists available types; too-new API rejected.
 
 ### M3 — Built-in `http` check
-- [ ] `HttpCheckPlugin`: shared `HttpClient`, `Redirect.NEVER`, timeout, `maxClass` rule, URL validation, declared targets. **Tests:** against a local SiggiHTTP server, the 200/301/404/503 × `maxClass` 2–5 matrix; refused and timeout always fail; redirect not followed; `maxClass` 1 and 6 rejected; invalid URLs (path, query, scheme) rejected.
+- [x] `HttpCheckPlugin`: shared `HttpClient`, `Redirect.NEVER`, timeout, `maxClass` rule, URL validation, declared targets. **Tests:** against a local SiggiHTTP server, the 200/301/404/503 × `maxClass` 2–5 matrix; refused and timeout always fail; redirect not followed; `maxClass` 1 and 6 rejected; invalid URLs (path, query, scheme) rejected.
 
 ### M4 — Scheduling & live state
 - [ ] `StatusRegistry`: `failureThreshold` state machine, failure streak start time, recent checks (last 100), `StateChange` events, transition logging. **Tests:** thresholds 1 and 3; streak start time; UNKNOWN → UP/DOWN on first result; recent checks capped at 100.
@@ -1222,3 +1222,12 @@ them; see CLAUDE.md.
   `run` loads plugins after the config, logs each one, then validates every endpoint (known
   type, the plugin's `create()`, no unread settings; the checker is closed again) and reports
   those failures as configuration errors in the `endpoints[i] "id": …` format.
+- `http` check (app, package `check.http`, registered via the app's `META-INF/services`): one
+  `HttpClient` per plugin instance, created on first use, HTTP/1.1 only (no h2c upgrade or ALPN
+  surprises), `Redirect.NEVER`, `User-Agent: HealthChecker`, response body discarded. The timeout
+  is applied to the request and as a hard bound on the whole exchange (cancelled when it expires).
+  The URL scheme is case-insensitive; user info (`user:pw@`) and ports outside 1–65535 are
+  rejected. Failure messages are generic ("connection failed", "host not found", "TLS error",
+  "timeout after N ms", …) and never include exception texts, which can name the target.
+  Messages: `status N` on pass, `status N, expected at most Mxx` on fail. Declared targets: `url`
+  as written, and `host` (IPv6 without brackets).
