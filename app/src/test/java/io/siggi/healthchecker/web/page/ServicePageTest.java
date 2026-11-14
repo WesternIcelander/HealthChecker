@@ -2,6 +2,7 @@ package io.siggi.healthchecker.web.page;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.siggi.healthchecker.api.CheckResult;
 import io.siggi.healthchecker.config.CategoryConfig;
 import io.siggi.healthchecker.config.DashboardConfig;
@@ -817,6 +818,286 @@ class ServicePageTest {
         assertEquals(2, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 5, 31)));
         assertEquals(4, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2025, 9, 1)));
         assertEquals(ServicePage.MAX_CALENDAR_PAGE, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(1, 1, 1)));
+    }
+
+    // ---- JSON API ----
+
+    private static JsonObject json(Response response) {
+        return JsonParser.parseString(response.body()).getAsJsonObject();
+    }
+
+    private static List<String> keys(JsonObject o) {
+        return new ArrayList<>(o.keySet());
+    }
+
+    private static List<String> apiEventIds(JsonObject page) {
+        List<String> ids = new ArrayList<>();
+        for (var e : page.getAsJsonArray("events")) ids.add(e.getAsJsonObject().get("id").getAsString());
+        return ids;
+    }
+
+    @Test
+    void apiFollowsTheHtmlNotFoundRules() throws Exception {
+        notedHistory("website");
+        notedHistory("intranet");
+        notedHistory("survival");
+        notedHistory("creative");
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        List<Viewer> viewers = List.of(Viewer.ANONYMOUS, new Viewer("bob", false), new Viewer("alice", true));
+        List<String> ids = List.of("website", "intranet", "survival", "creative", "nope", "Website");
+        for (Viewer v : viewers) {
+            viewer = v;
+            for (String host : List.of("status.example.com", "mc-status.example.com")) {
+                for (String id : ids) {
+                    String event = "/event/ev-" + id;
+                    // Every API path answers 200 exactly when the matching HTML page does.
+                    String[][] pairs = {
+                            {"/service/" + id, "/api/service/" + id},
+                            {"/service/" + id, "/api/service/" + id + "/events"},
+                            {"/service/" + id, "/api/service/" + id + "/days"},
+                            {"/service/" + id + event, "/api/service/" + id + event},
+                    };
+                    for (String[] pair : pairs) {
+                        int html = get(server, pair[0], host).status();
+                        int api = get(server, pair[1], host).status();
+                        String label = v + " " + host + " " + pair[1];
+                        assertEquals(html == 200, api == 200 || api == 503, label);
+                        if (html == 404) assertEquals(404, api, label);
+                    }
+                }
+            }
+        }
+        // Spot checks of the matrix above.
+        viewer = Viewer.ANONYMOUS;
+        Response privateAnon = get(server, "/api/service/intranet", "status.example.com");
+        assertEquals(404, privateAnon.status());
+        assertEquals(get(server, "/api/service/nope", "status.example.com").body(), privateAnon.body());
+        assertEquals(404, get(server, "/api/service/intranet/event/ev-intranet", "status.example.com").status());
+        assertEquals(404, get(server, "/api/service/website/days", "mc-status.example.com").status());
+        assertEquals(200, get(server, "/api/service/survival/days", "mc-status.example.com").status());
+        viewer = new Viewer("alice", true);
+        assertEquals(404, get(server, "/api/service/website", "mc-status.example.com").status());
+        assertEquals(200, get(server, "/api/service/intranet/events", "status.example.com").status());
+        // Other ids, segments and events.
+        for (String path : List.of("/api/service/", "/api/service/website/", "/api/service/website/extra",
+                "/api/service/website/events/x", "/api/service/website/event/", "/api/service/website/event/nope",
+                "/api/service/website/event/ev.1", "/api/service/website/event/ev-survival",
+                "/api/service/website/days/2026-11-13")) {
+            assertEquals(404, get(server, path, "status.example.com").status(), path);
+        }
+    }
+
+    @Test
+    void apiRejectsUnknownHosts() throws Exception {
+        WebServer server = start(UnknownHostsPolicy.REJECT);
+        assertEquals(404, get(server, "/api/service/website", "unknown.test").status());
+        assertEquals(404, get(server, "/api/service/website/days", "unknown.test").status());
+        assertEquals(503, get(server, "/api/service/survival", "mc-status.example.com").status());
+    }
+
+    @Test
+    void apiServiceFieldsPerVisibility() throws Exception {
+        history("website", "2026-11-01T00:00:00Z", NOW.toString(),
+                event("2026-11-13T10:00:00Z", "2026-11-13T10:30:00Z"));
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+
+        Response website = get(server, "/api/service/website", "status.example.com");
+        assertEquals(503, website.status()); // down, like /api/status
+        JsonObject pub = json(website);
+        assertEquals(List.of("id", "name", "type", "state", "since", "uptime", "days", "last", "recentChecks", "viewer"),
+                keys(pub));
+        assertEquals("anonymous", pub.get("viewer").getAsString());
+        assertEquals(97.91, pub.getAsJsonObject("uptime").get("24h").getAsDouble());
+        assertEquals(60, pub.getAsJsonArray("days").size());
+        assertEquals("2026-11-13", pub.getAsJsonArray("days").get(59).getAsJsonObject().get("date").getAsString());
+        JsonArray checks = pub.getAsJsonArray("recentChecks");
+        assertEquals(3, checks.size());
+        assertEquals(List.of("at", "latencyMs", "success", "message", "details"), keys(checks.get(0).getAsJsonObject()));
+        // The leaking message and detail are left out; the rest stays.
+        JsonObject failed = checks.get(2).getAsJsonObject();
+        assertEquals(List.of("at", "latencyMs", "success", "details"), keys(failed));
+        assertEquals(List.of("statusCode"), keys(failed.getAsJsonObject("details")));
+        assertNoTargets(website.body());
+
+        // public-status: name, state, uptimes, days and pass/fail checks only.
+        Response survival = get(server, "/api/service/survival", "status.example.com");
+        JsonObject status = json(survival);
+        assertEquals(List.of("id", "name", "state", "since", "uptime", "days", "recentChecks", "viewer"), keys(status));
+        for (var check : status.getAsJsonArray("recentChecks")) {
+            assertEquals(List.of("at", "success"), keys(check.getAsJsonObject()));
+        }
+        assertNoTargets(survival.body());
+        viewer = new Viewer("bob", false);
+        Response bob = get(server, "/api/service/survival", "status.example.com");
+        assertEquals(List.of("id", "name", "state", "since", "uptime", "days", "recentChecks", "viewer"), keys(json(bob)));
+        assertEquals("bob", json(bob).get("viewer").getAsString());
+
+        // Up: 200.
+        statuses.put("website", new EndpointStatus("website", State.UP, T0, 0, 0, null, null,
+                statuses.get("website").lastCheck(), List.of()));
+        assertEquals(200, get(server, "/api/service/website", "status.example.com").status());
+
+        // Privileged: everything, including targets and notification settings.
+        viewer = new Viewer("alice", true);
+        JsonObject all = json(get(server, "/api/service/intranet", "status.example.com"));
+        assertEquals(List.of("id", "name", "type", "state", "since", "uptime", "days", "last", "visibility", "targets",
+                "recentChecks", "notify", "reminders", "reminderRepeatMinutes", "viewer"), keys(all));
+        assertEquals("private", all.get("visibility").getAsString());
+        assertEquals("http://10.0.0.5:8080",
+                all.getAsJsonArray("targets").get(0).getAsJsonObject().get("value").getAsString());
+        assertEquals("can't reach http://10.0.0.5:8080",
+                all.getAsJsonArray("recentChecks").get(2).getAsJsonObject().get("message").getAsString());
+    }
+
+    @Test
+    void apiEventsPaging() throws Exception {
+        history("website", "2026-01-01T00:00:00Z", NOW.toString(), numberedEvents(30));
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        JsonObject page0 = json(get(server, "/api/service/website/events", "status.example.com"));
+        assertEquals(0, page0.get("page").getAsInt());
+        assertEquals(2, page0.get("pages").getAsInt());
+        assertEquals(25, page0.get("pageSize").getAsInt());
+        assertEquals(30, page0.get("total").getAsInt());
+        List<String> ids0 = apiEventIds(page0);
+        assertEquals(eventIds(get(server, "/service/website", "status.example.com").body()), ids0);
+        assertEquals("ev-29", ids0.getFirst());
+        JsonObject page1 = json(get(server, "/api/service/website/events?page=1", "status.example.com"));
+        assertEquals(List.of("ev-04", "ev-03", "ev-02", "ev-01", "ev-00"), apiEventIds(page1));
+        // Past the last page: the last page; invalid: the first.
+        JsonObject past = json(get(server, "/api/service/website/events?page=99", "status.example.com"));
+        assertEquals(1, past.get("page").getAsInt());
+        assertEquals(apiEventIds(page1), apiEventIds(past));
+        assertEquals(ids0, apiEventIds(json(get(server, "/api/service/website/events?page=-1", "status.example.com"))));
+
+        JsonObject event = page1.getAsJsonArray("events").get(4).getAsJsonObject();
+        assertEquals(List.of("id", "title", "kind", "start", "end", "ongoing", "durationSeconds", "firstFailureMessage",
+                "lastFailureMessage", "notes"), keys(event));
+        assertEquals("Name website outage", event.get("title").getAsString());
+        assertEquals("outage", event.get("kind").getAsString());
+        assertEquals("2026-01-01T00:00:00Z", event.get("start").getAsString());
+        assertEquals(600, event.get("durationSeconds").getAsLong());
+        assertFalse(event.get("ongoing").getAsBoolean());
+
+        // No events at all.
+        JsonObject empty = json(get(server, "/api/service/survival/events", "status.example.com"));
+        assertEquals(0, empty.get("total").getAsInt());
+        assertEquals(1, empty.get("pages").getAsInt());
+        assertEquals(0, empty.getAsJsonArray("events").size());
+    }
+
+    @Test
+    void apiEventsAndEventShowOnlyVisibleNotesAndFields() throws Exception {
+        notedHistory("website");
+        notedHistory("survival");
+        notedHistory("intranet");
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        for (Viewer v : List.of(Viewer.ANONYMOUS, new Viewer("bob", false))) {
+            viewer = v;
+            for (String id : List.of("website", "survival")) {
+                Response list = get(server, "/api/service/" + id + "/events", "status.example.com");
+                Response one = get(server, "/api/service/" + id + "/event/ev-" + id, "status.example.com");
+                assertEquals(200, one.status());
+                for (Response r : List.of(list, one)) {
+                    assertTrue(r.body().contains("Public <b>note</b>\\nsecond line"), id);
+                    assertFalse(r.body().contains(PRIVATE_NOTE), id);
+                    assertFalse(r.body().contains("n-priv"), id);
+                    assertFalse(r.body().contains("\"visibility\""), id);
+                    assertNoTargets(r.body());
+                }
+                JsonObject event = json(one);
+                JsonObject note = event.getAsJsonArray("notes").get(0).getAsJsonObject();
+                assertEquals(List.of("id", "author", "createdAt", "editedAt", "text"), keys(note));
+                assertEquals(1, event.getAsJsonArray("notes").size());
+                assertEquals(id, event.get("service").getAsString());
+                // Failure messages only for public endpoints; privileged fields never.
+                assertEquals(id.equals("website"), event.has("firstFailureMessage"), id);
+                assertFalse(event.has("endedUnobserved"));
+                assertFalse(event.has("customTitle"));
+            }
+            assertEquals(404, get(server, "/api/service/intranet/event/ev-intranet", "status.example.com").status());
+        }
+
+        viewer = new Viewer("alice", true);
+        JsonObject event = json(get(server, "/api/service/intranet/event/ev-intranet", "status.example.com"));
+        assertEquals(2, event.getAsJsonArray("notes").size());
+        assertEquals("private", event.getAsJsonArray("notes").get(1).getAsJsonObject().get("visibility").getAsString());
+        assertTrue(event.has("endedUnobserved"));
+        assertTrue(get(server, "/api/service/website/events", "status.example.com").body().contains(PRIVATE_NOTE));
+    }
+
+    @Test
+    void apiOngoingEvent() throws Exception {
+        history("website", "2026-11-01T00:00:00Z", NOW.toString());
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        Instant failed = Instant.parse("2026-11-13T11:00:00Z");
+        CheckRecord fail = new CheckRecord(failed, Duration.ofMillis(10), new CheckResult(false, "status 503", Map.of()));
+        history.record("website", fail, new StateChange("website", State.UP, State.DOWN, fail, failed, "status 503", 1));
+        JsonObject page = json(get(server, "/api/service/website/events", "status.example.com"));
+        JsonObject event = page.getAsJsonArray("events").get(0).getAsJsonObject();
+        assertTrue(event.get("end").isJsonNull());
+        assertTrue(event.get("ongoing").getAsBoolean());
+        assertEquals(3600, event.get("durationSeconds").getAsLong());
+        assertEquals(event, json(get(server, "/api/service/website/event/" + event.get("id").getAsString(),
+                "status.example.com")).deepCopy().getAsJsonObject().entrySet().stream()
+                .filter(e -> !e.getKey().equals("service"))
+                .collect(JsonObject::new, (o, e) -> o.add(e.getKey(), e.getValue()), (a, b) -> { }));
+    }
+
+    @Test
+    void apiDaysAndRangeLimit() throws Exception {
+        history("website", "2026-11-01T00:00:00Z", NOW.toString(),
+                event("2026-11-02T00:00:00Z", "2026-11-02T00:10:00Z"));
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        String base = "/api/service/website/days";
+
+        // Default: the bar's 60 days, ending today.
+        JsonObject def = json(get(server, base, "status.example.com"));
+        assertEquals("2026-09-15", def.get("from").getAsString());
+        assertEquals("2026-11-13", def.get("to").getAsString());
+        assertEquals(60, def.getAsJsonArray("days").size());
+
+        JsonObject range = json(get(server, base + "?from=2026-10-31&to=2026-11-02", "status.example.com"));
+        JsonArray days = range.getAsJsonArray("days");
+        assertEquals(3, days.size());
+        JsonObject before = days.get(0).getAsJsonObject();
+        assertEquals("2026-10-31", before.get("date").getAsString());
+        assertTrue(before.get("uptime").isJsonNull()); // before the first coverage
+        assertEquals("grey", before.get("color").getAsString());
+        assertEquals(100.0, days.get(1).getAsJsonObject().get("uptime").getAsDouble());
+        JsonObject down = days.get(2).getAsJsonObject();
+        assertEquals(99.3, down.get("uptime").getAsDouble());
+        assertEquals(600, down.get("downtimeSeconds").getAsLong());
+        assertEquals(1, down.get("events").getAsInt());
+        assertEquals("yellow", down.get("color").getAsString());
+        // The same summaries as the bar.
+        assertEquals(json(get(server, "/api/service/website", "status.example.com")).getAsJsonArray("days"),
+                def.getAsJsonArray("days"));
+
+        // Days after today are left out.
+        JsonObject future = json(get(server, base + "?from=2026-11-12&to=2026-12-31", "status.example.com"));
+        assertEquals(2, future.getAsJsonArray("days").size());
+        assertEquals(0, json(get(server, base + "?from=2026-12-01&to=2026-12-31", "status.example.com"))
+                .getAsJsonArray("days").size());
+        // Only "to": the 60 days ending there.
+        JsonObject toOnly = json(get(server, base + "?to=2026-10-31", "status.example.com"));
+        assertEquals("2026-09-02", toOnly.get("from").getAsString());
+
+        // At most 400 days per request.
+        Response max = get(server, base + "?from=2025-10-10&to=2026-11-13", "status.example.com");
+        assertEquals(200, max.status());
+        assertEquals(400, json(max).getAsJsonArray("days").size());
+        Response tooMany = get(server, base + "?from=2025-10-09&to=2026-11-13", "status.example.com");
+        assertEquals(400, tooMany.status());
+        assertEquals("at most 400 days per request", json(tooMany).get("error").getAsString());
+        assertEquals(400, get(server, base + "?from=1900-01-01", "status.example.com").status());
+        // Bad dates and order.
+        for (String query : List.of("?from=2026-11-02&to=2026-11-01", "?from=2026-02-30", "?to=yesterday",
+                "?from=", "?from=2026-1-1")) {
+            assertEquals(400, get(server, base + query, "status.example.com").status(), query);
+        }
+        // Out of scope or not visible: 404 before any parameter checks.
+        assertEquals(404, get(server, base + "?from=x", "mc-status.example.com").status());
+        assertEquals(404, get(server, "/api/service/intranet/days?from=x", "status.example.com").status());
     }
 
     private void assertNoTargets(String body) {

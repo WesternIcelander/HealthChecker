@@ -1,17 +1,11 @@
 package io.siggi.healthchecker.web.page;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 import io.siggi.healthchecker.config.DashboardConfig;
 import io.siggi.healthchecker.history.DaySummary;
 import io.siggi.healthchecker.history.Uptime;
 import io.siggi.healthchecker.history.UptimeCalculator;
-import io.siggi.healthchecker.plugin.JsonEndpointConfig.Target;
 import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.status.EndpointStatus;
 import io.siggi.healthchecker.status.State;
@@ -22,7 +16,6 @@ import io.siggi.healthchecker.web.site.Site;
 import io.siggi.healthchecker.web.site.SiteResolver;
 import io.siggi.healthchecker.web.view.CategoryGrouping;
 import io.siggi.healthchecker.web.view.CategorySection;
-import io.siggi.healthchecker.web.view.CheckView;
 import io.siggi.healthchecker.web.view.EndpointView;
 import io.siggi.healthchecker.web.view.ViewFilter;
 import io.siggi.healthchecker.web.view.Viewer;
@@ -31,9 +24,7 @@ import io.siggi.http.HTTPRequest;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalDouble;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -51,7 +42,6 @@ import static io.siggi.healthchecker.web.page.PageSupport.write;
 public final class StatusPage {
     /** Number of day segments in the bar, oldest first, ending today. */
     public static final int BAR_DAYS = 60;
-    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().serializeNulls().create();
 
     private final SiteResolver sites;
     private final Supplier<ResolvedLayout> layout;
@@ -204,7 +194,7 @@ public final class StatusPage {
         Model model = found.get();
         JsonObject root = new JsonObject();
         root.addProperty("overall", model.overall().name());
-        root.addProperty("viewer", model.viewer().anonymous() ? "anonymous" : model.viewer().userName());
+        root.addProperty("viewer", JsonViews.viewer(model.viewer()));
         JsonArray categories = new JsonArray();
         for (Section section : model.sections()) {
             CategorySection cs = section.category();
@@ -226,73 +216,10 @@ public final class StatusPage {
         }
         root.add("categories", categories);
         write(request, model.overall() == State.DOWN ? "503 Service Unavailable" : "200 OK",
-                "application/json; charset=utf-8", GSON.toJson(root));
+                JsonViews.CONTENT_TYPE, JsonViews.GSON.toJson(root));
     }
 
     private JsonObject endpointJson(Row row) {
-        EndpointView service = row.view();
-        JsonObject endpoint = new JsonObject();
-        endpoint.addProperty("id", service.id());
-        endpoint.addProperty("name", service.name());
-        if (service.type() != null) endpoint.addProperty("type", service.type());
-        endpoint.addProperty("state", service.state().name());
-        if (service.since() != null) endpoint.addProperty("since", service.since().toString());
-        JsonObject uptimes = new JsonObject();
-        uptimes.add("24h", percent(row.day()));
-        uptimes.add("60d", percent(row.sixtyDays()));
-        endpoint.add("uptime", uptimes);
-        JsonArray days = new JsonArray();
-        for (DaySummary day : row.days()) {
-            JsonObject d = new JsonObject();
-            d.addProperty("date", day.date().toString());
-            d.add("uptime", percent(day.uptime()));
-            d.addProperty("downtimeSeconds", day.uptime().downtime().getSeconds());
-            d.addProperty("events", day.events());
-            if (day.maintenanceEvents() > 0) d.addProperty("maintenanceEvents", day.maintenanceEvents());
-            d.addProperty("color", DayColor.of(day, dashboard).id());
-            days.add(d);
-        }
-        endpoint.add("days", days);
-        if (service.lastCheck() != null) {
-            endpoint.add("last", checkJson(service.lastCheck()));
-        }
-        // Privileged viewers only (ViewFilter leaves these null for everyone else).
-        if (service.visibility() != null) endpoint.addProperty("visibility", service.visibility().configName());
-        if (service.targets() != null) {
-            JsonArray targets = new JsonArray();
-            for (Target target : service.targets()) {
-                JsonObject t = new JsonObject();
-                t.addProperty("label", target.label());
-                t.addProperty("value", target.value());
-                targets.add(t);
-            }
-            endpoint.add("targets", targets);
-        }
-        return endpoint;
-    }
-
-    private static JsonObject checkJson(CheckView check) {
-        JsonObject last = new JsonObject();
-        last.addProperty("at", check.at().toString());
-        if (check.latency() != null) last.addProperty("latencyMs", check.latency().toMillis());
-        last.addProperty("success", check.success());
-        if (check.message() != null) last.addProperty("message", check.message());
-        if (check.details() != null) {
-            JsonObject details = new JsonObject();
-            for (Map.Entry<String, Object> e : check.details().entrySet()) {
-                Object v = e.getValue();
-                if (v instanceof Number n) details.addProperty(e.getKey(), n);
-                else if (v instanceof Boolean b) details.addProperty(e.getKey(), b);
-                else details.addProperty(e.getKey(), String.valueOf(v));
-            }
-            last.add("details", details);
-        }
-        return last;
-    }
-
-    /** The percentage as a number, or JSON {@code null} without data. */
-    private static JsonElement percent(Uptime uptime) {
-        OptionalDouble p = uptime.percent();
-        return p.isPresent() ? new JsonPrimitive(p.getAsDouble()) : JsonNull.INSTANCE;
+        return JsonViews.endpoint(row.view(), row.day(), row.sixtyDays(), row.days(), dashboard);
     }
 }

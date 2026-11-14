@@ -1066,7 +1066,7 @@ test list are build, docs or manual steps.
 - [x] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
 - [x] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
 - [x] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
-- [ ] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
+- [x] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
 
 ### M8 — MinecraftChecker plugin (repo `plugin-projects/MinecraftChecker`)
 - [ ] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
@@ -1399,3 +1399,15 @@ them; see CLAUDE.md.
   calendar view on the page containing that day, overriding `?view=` and `?page=`, marks the day (`cal-selected`,
   `aria-current="date"`) and renders the same section in a panel below the calendar with a "Close" link; `app.js` moves it
   into the popover. An invalid or future `?day=` is ignored.
+- Service JSON API (`web.page.ServiceApi`, registered by `ServicePage`; shared JSON in `JsonViews`, also used by
+  `/api/status`): every path uses the service page's `404` rules (same lookup, so an API path answers exactly when the
+  matching HTML page does; unknown sub-paths are `404` too). `/api/service/{id}` is the `/api/status` endpoint object
+  plus `recentChecks` (oldest first, fields as `ViewFilter` provides), `viewer`, and for `view.private` also `notify`,
+  `reminders` and `reminderRepeatMinutes`; it answers `503` while the endpoint is DOWN, like `/api/status`. `/events?page=N`
+  has `page`, `pages`, `pageSize`, `total` and `events`, paged like the list view. An event has `id`, `title`, `kind`
+  (lowercase), `start`, `end` (`null` while ongoing), `ongoing`, `durationSeconds` (up to now while ongoing), `notes`
+  (`id`, `author`, `createdAt`, `editedAt`?, `text`, `visibility` for privileged viewers only) and, where provided, the
+  failure messages and privileged fields; `/event/{eventId}` adds `service`. `/days?from=…&to=…`: `to` defaults to today,
+  `from` to the 59 days before `to`; a bad date, `from` after `to` or more than 400 days is `400` with
+  `{"error": …}` (checked after the `404` rules); days after today are left out, days before the first coverage are
+  no-data without being computed. The response echoes `from` and `to`.

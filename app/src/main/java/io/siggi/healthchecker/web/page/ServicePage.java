@@ -116,6 +116,12 @@ public final class ServicePage {
 
     public void register(WebServer server) {
         server.register(PREFIX, this::page);
+        new ServiceApi(this, dashboard, clock).register(server);
+    }
+
+    /** Today in the configured timezone. */
+    LocalDate today() {
+        return uptime.today();
     }
 
     /** A service the request may see: its site, the viewer, the endpoint and its filtered view. */
@@ -253,6 +259,31 @@ public final class ServicePage {
     }
 
     /**
+     * The summaries of the days {@code from}–{@code to} (inclusive), oldest first, leaving out
+     * days after today. Days before the endpoint's first coverage have no data and aren't
+     * computed, like on the calendar.
+     */
+    List<DaySummary> days(Service service, LocalDate from, LocalDate to) {
+        String id = service.endpoint().id();
+        LocalDate today = uptime.today();
+        LocalDate last = to.isAfter(today) ? today : to;
+        List<DaySummary> days = new ArrayList<>();
+        if (last.isBefore(from)) {
+            return days;
+        }
+        LocalDate firstCovered = firstCovered(id);
+        LocalDate computedFrom = firstCovered == null ? null : (from.isBefore(firstCovered) ? firstCovered : from);
+        for (LocalDate date = from; !date.isAfter(last) && (computedFrom == null || date.isBefore(computedFrom));
+             date = date.plusDays(1)) {
+            days.add(new DaySummary(date, Uptime.NONE, 0, 0));
+        }
+        if (computedFrom != null && !last.isBefore(computedFrom)) {
+            days.addAll(uptime.days(id, computedFrom, last));
+        }
+        return days;
+    }
+
+    /**
      * The months on calendar page {@code page}, oldest first: the {@value #CALENDAR_MONTHS} months
      * ending {@value #CALENDAR_MONTHS} × {@code page} months before {@code current}.
      */
@@ -329,7 +360,7 @@ public final class ServicePage {
         return service(request, id).map(this::header);
     }
 
-    private Header header(Service service) {
+    Header header(Service service) {
         String id = service.endpoint().id();
         LocalDate today = uptime.today();
         return new Header(service.site(), service.viewer(), service.view(), uptime.last24Hours(id),
