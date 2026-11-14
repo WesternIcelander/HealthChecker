@@ -1070,7 +1070,7 @@ test list are build, docs or manual steps.
 
 ### M8 — MinecraftChecker plugin (repo `plugin-projects/MinecraftChecker`)
 - [x] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
-- [ ] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
+- [x] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
 - [ ] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
 - [ ] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
 - [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
@@ -1413,3 +1413,12 @@ them; see CLAUDE.md.
   no-data without being computed. The response echoes `from` and `to`.
 - MinecraftChecker pom is standalone (no parent): it pins Java 21, `HealthChecker-API` 1.0-SNAPSHOT and Gson 2.13.2
   (both `provided`) and JUnit 5.13.4 itself. Package `io.siggi.minecraftchecker`, plugin class `MinecraftCheckPlugin`.
+- Server List Ping (`ServerListPing`, `PacketIO`, `ServerStatus`, `Motd` in MinecraftChecker): the handshake sends
+  protocol version `-1` (the convention when pinging to find the version) and the caller-supplied host and port; one
+  deadline covers connect and the whole exchange. Received packets are capped at 2 MiB (mod lists can be large), checked
+  from the length prefix before anything is allocated; a string can't be longer than the rest of its packet. A valid
+  response is a JSON object with a `version` object; `players`, `protocol` and `description` are optional (missing or
+  wrong-typed values are left out of the details). The ping is optional and never fails the check: a missing, wrong or
+  late pong just leaves the round-trip time out. MOTD: component `text` (or `translate`'s `fallback`, else the key) and
+  `extra` are concatenated, `§` codes stripped, each line trimmed. Protocol errors are `PingException` (an
+  `IOException`) with messages that never contain the target.
