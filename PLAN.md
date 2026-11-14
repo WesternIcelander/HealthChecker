@@ -1106,7 +1106,7 @@ test list are build, docs or manual steps.
 - [x] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
 - [x] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
 - [x] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
-- [ ] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
+- [x] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
 
 ### M14 — Notifications: framework, reminders & Discord
 - [ ] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
@@ -1840,7 +1840,8 @@ them; see CLAUDE.md.
   as JSON) and `next` in the visitor's session (one write, so only one session is started) and answers `303` to the
   provider; `switch=1` (the "Sign in with a different account" link) adds `prompt=select_account` for OIDC. The
   callback URL is `site.link("/auth/callback/{id}")`; a provider is offered on a site (button, start, callback) only
-  when it's available there and the site has a base URL, else `404` (per-site tests come with the next step).
+  when it's available there and the site has a base URL, else `404`. A sign-in started on one site
+  can't be finished on a site where the provider isn't offered (`404`).
   `GET /auth/callback/{id}` takes the pending flow out of the session first (single use), then: allowed → new session
   (`resetSession`), `303` to `next`; unknown or disabled → the session is deleted (so none is left, not even someone
   else's on that browser) and a `403` page shows the provider label, the name/email hint, the identifier in a `<code>`

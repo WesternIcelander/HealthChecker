@@ -13,6 +13,7 @@ import io.siggi.healthchecker.auth.ProviderConfig;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.config.ServerConfig;
+import io.siggi.healthchecker.config.SiteConfig;
 import io.siggi.healthchecker.config.UnknownHostsPolicy;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.site.SiteResolver;
@@ -96,14 +97,18 @@ class ProviderLoginPageTest {
     }
 
     private void start(boolean localEnabled) throws Exception {
+        start(localEnabled, AUTH, List.of());
+    }
+
+    private void start(boolean localEnabled, String authJson, List<SiteConfig> siteConfigs) throws Exception {
         web = new WebServer(new ServerConfig(0, "127.0.0.1", BASE, List.of("127.0.0.1"), UnknownHostsPolicy.DEFAULT));
         sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
-        SiteResolver sites = new SiteResolver(List.of(), "Status", BASE, UnknownHostsPolicy.DEFAULT,
+        SiteResolver sites = new SiteResolver(siteConfigs, "Status", BASE, UnknownHostsPolicy.DEFAULT,
                 web.trustedProxies());
-        JsonObject auth = JsonParser.parseString(AUTH).getAsJsonObject();
+        JsonObject auth = JsonParser.parseString(authJson).getAsJsonObject();
         UserDirectory users = UserDirectory.parse(auth);
         AuthProviders providers = AuthProviders.parse(auth,
-                new ServerConfig(0, "127.0.0.1", BASE, List.of(), UnknownHostsPolicy.DEFAULT), List.of());
+                new ServerConfig(0, "127.0.0.1", BASE, List.of(), UnknownHostsPolicy.DEFAULT), siteConfigs);
         audit = new AuditLog(dataDir.resolve("audit.jsonl"), Clock.systemUTC());
         external = new FakeExternalLogin();
         Permissions permissions = new Permissions(sessions, users);
@@ -117,9 +122,15 @@ class ProviderLoginPageTest {
     }
 
     private HttpResponse<String> get(String path, String cookie) throws Exception {
+        return get(path, cookie, null);
+    }
+
+    /** {@code host} is sent as {@code X-Forwarded-Host} (the test server trusts loopback as a proxy). */
+    private HttpResponse<String> get(String path, String cookie, String host) throws Exception {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + web.port() + path))
                 .timeout(Duration.ofSeconds(10));
         if (cookie != null) b.header("Cookie", cookie);
+        if (host != null) b.header("X-Forwarded-Host", host);
         return client.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
 
@@ -304,5 +315,96 @@ class ProviderLoginPageTest {
         List<AuditLog.Entry> entries = audit.page(0, 50).entries();
         assertEquals(ProviderLoginPage.REJECTED_PER_HOUR + 1, entries.size());
         assertEquals("google:998", entries.get(0).id());
+    }
+
+    // ---- sites ----
+
+    private static final String SITES_AUTH = """
+            {
+              "users": [{"id": "siggi", "displayName": "Siggi", "role": "admin",
+                         "identities": ["google:111", "corp:111"]}],
+              "providers": [
+                {"id": "google", "type": "oidc", "label": "Google", "issuer": "https://accounts.example",
+                 "clientId": "c"},
+                {"id": "corp", "type": "oidc", "label": "Corp", "issuer": "https://corp.example",
+                 "clientId": "c", "sites": ["B-Status.example.com"]}
+              ]
+            }""";
+    private static final SiteConfig SITE_A = new SiteConfig(List.of("a-status.example.com"), "A",
+            "https://a-status.example.com", List.of(), List.of());
+    private static final SiteConfig SITE_B = new SiteConfig(List.of("b-status.example.com", "*.b.example.com"), "B",
+            "https://b-status.example.com", List.of(), List.of());
+    /** No publicBaseUrl of its own: falls back to server.publicBaseUrl. */
+    private static final SiteConfig SITE_C = new SiteConfig(List.of("c-status.example.com"), "C",
+            null, List.of(), List.of());
+
+    private void startSites() throws Exception {
+        start(true, SITES_AUTH, List.of(SITE_A, SITE_B, SITE_C));
+    }
+
+    private String redirectUri(HttpResponse<?> started) {
+        String location = started.headers().firstValue("Location").orElseThrow();
+        return location.substring(location.indexOf("redirect_uri=") + "redirect_uri=".length());
+    }
+
+    @Test
+    void callbackUrlIsPerSite() throws Exception {
+        startSites();
+        Map<String, String> expected = Map.of(
+                "a-status.example.com", "https://a-status.example.com",
+                "b-status.example.com", "https://b-status.example.com",
+                "x.b.example.com", "https://b-status.example.com",
+                "c-status.example.com", BASE);
+        for (Map.Entry<String, String> e : expected.entrySet()) {
+            HttpResponse<String> started = get("/auth/start/google?next=%2Fx", null, e.getKey());
+            assertEquals(303, started.statusCode(), e.getKey());
+            assertEquals(e.getValue() + "/auth/callback/google", redirectUri(started), e.getKey());
+            // The login page's buttons link to the same site.
+            assertTrue(get("/login", null, e.getKey()).body()
+                    .contains("href=\"" + e.getValue() + "/auth/start/google?next=%2F\""), e.getKey());
+        }
+        // The default site (no matching host) uses server.publicBaseUrl.
+        assertEquals(BASE + "/auth/callback/google", redirectUri(get("/auth/start/google", null, "other.example")));
+        // The Host header never ends up in the callback URL.
+        assertFalse(redirectUri(get("/auth/start/google", null, "a-status.example.com:8443")).contains("8443"));
+    }
+
+    @Test
+    void callbackCompletesOnItsSite() throws Exception {
+        startSites();
+        external.claims = JsonParser.parseString("{\"sub\": \"111\"}").getAsJsonObject();
+        HttpResponse<String> started = get("/auth/start/google?next=%2Fservice%2Fweb", null, "a-status.example.com");
+        String cookie = cookie(started);
+        HttpResponse<String> r = get("/auth/callback/google?code=c&state=s-google", cookie, "a-status.example.com");
+        assertEquals(303, r.statusCode());
+        assertEquals("https://a-status.example.com/service/web", r.headers().firstValue("Location").orElseThrow());
+    }
+
+    @Test
+    void restrictedProviderOnlyOnItsSites() throws Exception {
+        startSites();
+        external.claims = JsonParser.parseString("{\"sub\": \"111\"}").getAsJsonObject();
+        // Offered on B (any of its hosts).
+        for (String host : List.of("b-status.example.com", "x.b.example.com")) {
+            assertTrue(get("/login", null, host).body().contains(">Sign in with Corp</a>"), host);
+            HttpResponse<String> started = get("/auth/start/corp", null, host);
+            assertEquals(303, started.statusCode(), host);
+            assertEquals("https://b-status.example.com/auth/callback/corp", redirectUri(started));
+            assertEquals(303, get("/auth/callback/corp?code=c&state=s-corp", cookie(started), host).statusCode());
+        }
+        int starts = external.starts;
+        // Hidden and rejected on other sites and on the default site.
+        for (String host : List.of("a-status.example.com", "c-status.example.com", "other.example")) {
+            String login = get("/login", null, host).body();
+            assertFalse(login.contains("Corp"), host);
+            assertTrue(login.contains(">Sign in with Google</a>"), host);
+            assertEquals(404, get("/auth/start/corp", null, host).statusCode(), host);
+            assertEquals(404, get("/auth/callback/corp?code=c&state=s-corp", null, host).statusCode(), host);
+        }
+        assertEquals(starts, external.starts, "no sign-in was started where the provider isn't offered");
+        // A sign-in started on B can't be finished on A.
+        HttpResponse<String> started = get("/auth/start/corp", null, "b-status.example.com");
+        assertEquals(404, get("/auth/callback/corp?code=c&state=s-corp", cookie(started), "a-status.example.com")
+                .statusCode());
     }
 }
