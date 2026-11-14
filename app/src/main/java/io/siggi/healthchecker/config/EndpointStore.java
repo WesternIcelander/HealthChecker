@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Endpoints and categories from both sources: {@code config.json} (read-only) and
@@ -136,6 +137,7 @@ public final class EndpointStore {
     private final Validator validator;
     private final List<String> warnings;
     private volatile State state;
+    private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
 
     private EndpointStore(Path file, Config config, Validator validator, State state, List<String> warnings) {
         this.file = file;
@@ -374,6 +376,23 @@ public final class EndpointStore {
     private void write(State next) throws IOException {
         AtomicFiles.write(file, encode(next).getBytes(StandardCharsets.UTF_8));
         state = next;
+        for (Runnable listener : listeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException e) {
+                System.getLogger(EndpointStore.class.getName())
+                        .log(System.Logger.Level.ERROR, "Endpoint store listener failed", e);
+            }
+        }
+    }
+
+    /**
+     * Adds a listener that runs after every successful write, while the store is still locked
+     * (so listeners see the writes in order and one at a time), e.g. to apply the change to the
+     * running checks. It reads the new state through {@link #definitions()} and the like.
+     */
+    public void addChangeListener(Runnable listener) {
+        listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     private static String notDashboard(String what, String id, boolean inConfig) {

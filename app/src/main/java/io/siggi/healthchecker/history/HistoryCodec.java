@@ -10,6 +10,7 @@ import com.google.gson.JsonPrimitive;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
@@ -38,6 +39,36 @@ final class HistoryCodec {
             sb.append(i == 0 ? "\n  " : ",\n  ").append(o);
         }
         return sb.append(periods.isEmpty() ? "]\n" : "\n]\n").toString();
+    }
+
+    /** A JSON array of strings, one per line. */
+    static String encodeTargets(Collection<String> values) {
+        StringBuilder sb = new StringBuilder("[");
+        int i = 0;
+        for (String value : values) {
+            sb.append(i++ == 0 ? "\n  " : ",\n  ").append(new JsonPrimitive(value));
+        }
+        return sb.append(values.isEmpty() ? "]\n" : "\n]\n").toString();
+    }
+
+    static List<String> decodeTargets(String json) throws FormatException {
+        JsonElement root;
+        try {
+            root = JsonParser.parseString(json);
+        } catch (JsonParseException e) {
+            throw new FormatException("invalid JSON: " + e.getMessage());
+        }
+        if (!(root instanceof JsonArray array)) {
+            throw new FormatException("expected an array of strings");
+        }
+        List<String> out = new ArrayList<>();
+        for (JsonElement e : array) {
+            if (!(e instanceof JsonPrimitive p && p.isString())) {
+                throw new FormatException("expected an array of strings");
+            }
+            out.add(p.getAsString());
+        }
+        return out;
     }
 
     static List<CoveragePeriod> decodeCoverage(String json) throws FormatException {

@@ -18,7 +18,9 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -68,6 +70,7 @@ public final class HistoryStore implements AutoCloseable {
     private static final Pattern ID = Pattern.compile("[a-z0-9-]+");
     private static final Pattern YEAR_FILE = Pattern.compile("(\\d{4})\\.jsonl");
     private static final String COVERAGE_FILE = "coverage.json";
+    private static final String TARGETS_FILE = "targets.json";
     private static final String EVENTS_DIR = "events";
 
     /** Replaces a file's content; {@link AtomicFiles#write(Path, byte[])} outside tests. */
@@ -151,6 +154,14 @@ public final class HistoryStore implements AutoCloseable {
                 throw new IOException(coverageFile + ": " + e.getMessage());
             }
             h.periods.sort(Comparator.comparing(CoveragePeriod::start));
+        }
+        Path targetsFile = dir.resolve(TARGETS_FILE);
+        if (Files.isRegularFile(targetsFile)) {
+            try {
+                h.targets.addAll(HistoryCodec.decodeTargets(Files.readString(targetsFile, StandardCharsets.UTF_8)));
+            } catch (HistoryCodec.FormatException e) {
+                throw new IOException(targetsFile + ": " + e.getMessage());
+            }
         }
         Path eventsDir = dir.resolve(EVENTS_DIR);
         AtomicFiles.deleteTempFiles(eventsDir);
@@ -276,11 +287,21 @@ public final class HistoryStore implements AutoCloseable {
     }
 
     /**
-     * Stops monitoring an endpoint (removed or replaced): its coverage period ends now, and
-     * an ongoing event is closed at its last failure and marked {@code endedUnobserved}.
-     * Recording a check for it later starts a new period.
+     * Stops monitoring an endpoint (removed): its coverage period ends now, and an ongoing
+     * event is closed at its last failure and marked {@code endedUnobserved}. Recording a
+     * check for it later starts a new period.
      */
-    public synchronized void stopMonitoring(String endpointId) {
+    public void stopMonitoring(String endpointId) {
+        stopMonitoring(endpointId, false);
+    }
+
+    /**
+     * Stops monitoring an endpoint: its coverage period ends now, and an ongoing event is
+     * closed at its last failure, marked {@code endedByConfigChange} if {@code configChange}
+     * (its check was replaced) or else {@code endedUnobserved}. Recording a check for it
+     * later starts a new period.
+     */
+    public synchronized void stopMonitoring(String endpointId, boolean configChange) {
         EndpointHistory h = histories.get(endpointId);
         if (h == null) {
             return;
@@ -291,9 +312,35 @@ public final class HistoryStore implements AutoCloseable {
         }
         HistoryEvent open = h.openEvent();
         if (open != null) {
-            closeEvent(h, open.closed(open.lastFailureAt(), true));
+            closeEvent(h, configChange
+                    ? open.closedByConfigChange(open.lastFailureAt())
+                    : open.closed(open.lastFailureAt(), true));
         }
         flush(h);
+    }
+
+    /**
+     * Remembers target values (hosts, URLs, …) the endpoint checks, so they stay hidden from the
+     * public in its history after its target changes: event messages recorded with an old
+     * target are leak-filtered against every target the endpoint ever had. New values are
+     * written to {@code targets.json} at once (on a write error, with the next heartbeat).
+     * Values are kept until the endpoint's history is deleted.
+     */
+    public synchronized void rememberTargets(String endpointId, Collection<String> values) {
+        EndpointHistory h = histories.computeIfAbsent(Objects.requireNonNull(endpointId, "endpointId"),
+                EndpointHistory::new);
+        for (String value : values) {
+            if (value != null && !value.isEmpty() && h.targets.add(value)) {
+                h.targetsDirty = true;
+            }
+        }
+        flush(h);
+    }
+
+    /** Every target value {@linkplain #rememberTargets remembered} for the endpoint. */
+    public synchronized Set<String> knownTargets(String endpointId) {
+        EndpointHistory h = histories.get(endpointId);
+        return h == null ? Set.of() : Set.copyOf(h.targets);
     }
 
     /**
@@ -520,6 +567,15 @@ public final class HistoryStore implements AutoCloseable {
 
     private void flush(EndpointHistory h) {
         flushEvents(h);
+        if (h.targetsDirty) {
+            try {
+                writer.write(h.dir().resolve(TARGETS_FILE),
+                        HistoryCodec.encodeTargets(h.targets).getBytes(StandardCharsets.UTF_8));
+                h.targetsDirty = false;
+            } catch (IOException | RuntimeException e) {
+                logger.log(Level.ERROR, "Couldn't write targets of " + h.id + "; retrying with the next heartbeat", e);
+            }
+        }
         if (h.coverageDirty) {
             try {
                 writer.write(h.dir().resolve(COVERAGE_FILE),
@@ -562,8 +618,10 @@ public final class HistoryStore implements AutoCloseable {
         final List<CoveragePeriod> periods = new ArrayList<>();
         final List<HistoryEvent> events = new ArrayList<>();
         final Set<Integer> dirtyYears = new TreeSet<>();
+        final Set<String> targets = new LinkedHashSet<>();
         boolean active;
         boolean coverageDirty;
+        boolean targetsDirty;
 
         EndpointHistory(String id) {
             this.id = id;

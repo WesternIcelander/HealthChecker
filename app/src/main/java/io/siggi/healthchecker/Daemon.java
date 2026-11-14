@@ -12,7 +12,9 @@ import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.UptimeCalculator;
 import io.siggi.healthchecker.plugin.PluginManager;
+import io.siggi.healthchecker.plugin.JsonEndpointConfig;
 import io.siggi.healthchecker.schedule.CheckScheduler;
+import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.schedule.EndpointFactory;
 import io.siggi.healthchecker.schedule.EndpointRegistry;
 import io.siggi.healthchecker.status.CheckRecord;
@@ -30,7 +32,12 @@ import io.siggi.healthchecker.web.site.SiteResolver;
 
 import java.io.IOException;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.Function;
 
 /**
  * The running service: endpoints from the config checked by the scheduler, results recorded
@@ -38,6 +45,7 @@ import java.util.concurrent.CountDownLatch;
  * Signed-in users see what their role's permissions allow; users and roles are read once at startup.
  */
 final class Daemon implements AutoCloseable {
+    private static final System.Logger LOGGER = System.getLogger(Daemon.class.getName());
     private final HistoryStore history;
     private final EndpointRegistry registry;
     private final StatusRegistry status = new StatusRegistry();
@@ -64,10 +72,33 @@ final class Daemon implements AutoCloseable {
             }
 
             @Override
-            public void stopped(String endpointId) {
-                history.stopMonitoring(endpointId);
+            public void stopped(String endpointId, CheckScheduler.StopReason reason) {
+                history.stopMonitoring(endpointId, reason == CheckScheduler.StopReason.REPLACED);
             }
         });
+        // Remember every target an endpoint has had, so its history stays leak-filtered after edits.
+        registry.subscribe(new EndpointRegistry.Listener() {
+            @Override
+            public void added(Endpoint endpoint) {
+                rememberTargets(endpoint);
+            }
+
+            @Override
+            public void updated(Endpoint old, Endpoint now) {
+                rememberTargets(now);
+            }
+
+            @Override
+            public void replaced(Endpoint old, Endpoint now) {
+                rememberTargets(now);
+            }
+
+            @Override
+            public void removed(Endpoint old) {
+            }
+        });
+        Function<String, Optional<Endpoint>> lookup =
+                id -> registry.get(id).map(e -> e.withPastTargets(history.knownTargets(id)));
         uptime = new UptimeCalculator(history, config.timezone(), config.maintenance().countsAsDowntime(), clock);
         LayoutStore layout = new LayoutStore(config.dataDir());
         layout.load();
@@ -86,12 +117,12 @@ final class Daemon implements AutoCloseable {
         EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config);
         endpointEditor.register(web);
         StatusPage statusPage = new StatusPage(sites, layoutEditor::layout,
-                registry::get, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);
+                lookup, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);
         statusPage.endpointEditor(endpointEditor);
         statusPage.register(web);
         ServicePage servicePage = new ServicePage(sites,
                 () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
-                registry::get, status::status, permissions::viewer, uptime, history, clock,
+                lookup, status::status, permissions::viewer, uptime, history, clock,
                 config.dashboard(), new EventEditor(permissions, sessions, history));
         servicePage.endpointEditor(endpointEditor);
         servicePage.register(web);
@@ -117,6 +148,7 @@ final class Daemon implements AutoCloseable {
             for (EndpointDefinition definition : daemon.endpoints.definitions()) {
                 daemon.registry.add(definition);
             }
+            daemon.endpoints.addChangeListener(daemon::applyEndpointChanges);
             daemon.history.startHeartbeat();
             daemon.scheduler.start();
             daemon.web.start();
@@ -125,6 +157,43 @@ final class Daemon implements AutoCloseable {
             throw e;
         }
         return daemon;
+    }
+
+    /**
+     * Applies a saved change of the dashboard endpoints to the running checks: new endpoints start
+     * being checked, presentation/routing changes apply in place (state and open events kept), and a
+     * changed check replaces the checker (state UNKNOWN, an open event closed as
+     * {@code endedByConfigChange}). Runs under the endpoint store's lock, right after the write.
+     */
+    private void applyEndpointChanges() {
+        Map<String, ConfigException> failures = registry.sync(endpoints.definitions());
+        failures.forEach((id, e) -> LOGGER.log(System.Logger.Level.ERROR,
+                "Saved endpoint " + id + " couldn't be applied; it keeps its previous check until the next save or"
+                        + " restart: " + e.getMessage()));
+    }
+
+    private void rememberTargets(Endpoint endpoint) {
+        List<String> values = new ArrayList<>();
+        for (JsonEndpointConfig.Target t : endpoint.targets()) {
+            values.add(t.value());
+        }
+        history.rememberTargets(endpoint.id(), values);
+    }
+
+    EndpointStore endpoints() {
+        return endpoints;
+    }
+
+    StatusRegistry status() {
+        return status;
+    }
+
+    HistoryStore history() {
+        return history;
+    }
+
+    EndpointRegistry registry() {
+        return registry;
     }
 
     /** The port the web server listens on. */

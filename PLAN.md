@@ -1089,7 +1089,7 @@ test list are build, docs or manual steps.
 ### M11 — Endpoint & category management in the dashboard
 - [x] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
 - [x] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
-- [ ] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
+- [x] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
 - [ ] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
 - [ ] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
 - [ ] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
@@ -1588,3 +1588,17 @@ them; see CLAUDE.md.
   endpoint is a read-only view (disabled fieldset, effective values) and its POST is `403`; a new id already used by
   either source is a field error. After saving, the editor redirects to `/admin/endpoints/{id}?saved=1`; applying the
   change live comes with the next step.
+- Save applies live (app, `Daemon`): `EndpointStore` runs change listeners after every successful write, still under
+  its lock (so writes apply in order); the daemon's listener calls `EndpointRegistry.sync(store.definitions())`, which
+  removes endpoints no longer listed, adds new ones and `update`s the rest (in place or replaced by the existing
+  rules). An add/update that fails there (the store already validated it, so only a flaky plugin `create()`) is
+  logged and leaves that endpoint as it was; the save itself still succeeded. `CheckScheduler.CheckListener.stopped`
+  now gets a `StopReason` (`REPLACED` / `REMOVED`); on `REPLACED` the history closes an open event at its last failure
+  with `endedByConfigChange` (not `endedUnobserved`), via `HistoryStore.stopMonitoring(id, configChange)`. Reminders
+  don't exist yet: M14 cancels them on that event close (history listeners see it), so nothing more is done here.
+  Past targets: event and check messages recorded before a host/URL edit name the old target, which the leak filter
+  (current targets only) would let through. So `HistoryStore` remembers every target value an endpoint ever declared
+  (`endpoints/{id}/targets.json`, written when an endpoint is added, updated or replaced; it goes when its history is deleted),
+  pages get the endpoint with those as `Endpoint.pastTargets`, and `ViewFilter.leaks` checks current and past values.
+  Past targets are never shown, only filtered. Targets declared before this change (config edits plus a restart)
+  aren't known; they're remembered from the first start with this version on.

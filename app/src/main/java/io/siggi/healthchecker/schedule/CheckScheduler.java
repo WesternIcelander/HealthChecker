@@ -64,6 +64,14 @@ public final class CheckScheduler implements AutoCloseable {
     private final List<CheckListener> checkListeners = new CopyOnWriteArrayList<>();
     private boolean closed;
 
+    /** Why an endpoint stopped being checked with its checker. */
+    public enum StopReason {
+        /** Its check changed: a new checker replaces the old one. */
+        REPLACED,
+        /** It was removed. */
+        REMOVED
+    }
+
     /** Gets every recorded check result, e.g. to write history. */
     public interface CheckListener {
         /**
@@ -74,8 +82,11 @@ public final class CheckScheduler implements AutoCloseable {
          */
         void checked(String endpointId, CheckRecord check, StateChange change);
 
-        /** Called when an endpoint stops being checked with its current checker (replaced or removed). */
-        default void stopped(String endpointId) {
+        /**
+         * Called when an endpoint stops being checked with its current checker, before a
+         * replacement (if any) starts.
+         */
+        default void stopped(String endpointId, StopReason reason) {
         }
     }
 
@@ -95,10 +106,10 @@ public final class CheckScheduler implements AutoCloseable {
         }
     }
 
-    private void fireStopped(String endpointId) {
+    private void fireStopped(String endpointId, StopReason reason) {
         for (CheckListener l : checkListeners) {
             try {
-                l.stopped(endpointId);
+                l.stopped(endpointId, reason);
             } catch (RuntimeException e) {
                 logger.log(Level.ERROR, "Check listener failed for " + endpointId, e);
             }
@@ -202,7 +213,7 @@ public final class CheckScheduler implements AutoCloseable {
                     return;
                 }
                 status.remove(old.id());
-                fireStopped(old.id());
+                fireStopped(old.id(), StopReason.REPLACED);
                 status.register(now.id(), now.failureThreshold());
                 startTask(now);
             }
@@ -214,7 +225,7 @@ public final class CheckScheduler implements AutoCloseable {
                 Task t = tasks.remove(old.id());
                 if (t != null) t.stop(true);
                 status.remove(old.id());
-                fireStopped(old.id());
+                fireStopped(old.id(), StopReason.REMOVED);
             }
         }
     }

@@ -3,7 +3,6 @@ package io.siggi.healthchecker.web.view;
 import io.siggi.healthchecker.config.Visibility;
 import io.siggi.healthchecker.history.EventNote;
 import io.siggi.healthchecker.history.HistoryEvent;
-import io.siggi.healthchecker.plugin.JsonEndpointConfig.Target;
 import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.status.CheckRecord;
 import io.siggi.healthchecker.status.EndpointStatus;
@@ -34,7 +33,8 @@ import java.util.Optional;
  * </ul>
  *
  * <p>Leak filter: a message, detail entry (key or value) or failure message that contains
- * any declared target value (case-insensitively) is left out entirely, with no placeholder.
+ * any declared target value, current or past (case-insensitively), is left out entirely, with
+ * no placeholder.
  */
 public final class ViewFilter {
     /** Whether the viewer may see the endpoint at all (a {@code 404} otherwise). */
@@ -133,14 +133,16 @@ public final class ViewFilter {
         return endpointName + " outage";
     }
 
-    /** Whether the text contains any of the endpoint's declared target values (case-insensitively). */
+    /**
+     * Whether the text contains any of the endpoint's declared target values, current or
+     * {@linkplain Endpoint#pastTargets() past} (case-insensitively).
+     */
     public static boolean leaks(Endpoint endpoint, String text) {
         if (text == null || text.isEmpty()) {
             return false;
         }
         String haystack = text.toLowerCase(Locale.ROOT);
-        for (Target target : endpoint.targets()) {
-            String value = target.value();
+        for (String value : endpoint.leakValues()) {
             if (!value.isEmpty() && haystack.contains(value.toLowerCase(Locale.ROOT))) {
                 return true;
             }

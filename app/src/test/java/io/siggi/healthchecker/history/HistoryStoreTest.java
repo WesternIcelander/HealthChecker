@@ -20,6 +20,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.ResourceBundle;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -230,6 +231,34 @@ class HistoryStoreTest {
         check(store, "a", 300, true);
         assertEquals(2, store.coverage("a").size());
         assertEquals(T0.plusSeconds(300), store.coverage("a").get(1).start());
+    }
+
+    @Test
+    void stopMonitoringForAConfigChangeMarksTheEventEndedByConfigChange() throws IOException {
+        status.register("a", 1);
+        HistoryStore store = open();
+        check(store, "a", 0, false);
+        check(store, "a", 60, false);
+        clock.set(T0.plusSeconds(90));
+        store.stopMonitoring("a", true);
+        HistoryEvent e = store.events("a").getFirst();
+        assertEquals(T0.plusSeconds(60), e.end());
+        assertTrue(e.endedByConfigChange());
+        assertFalse(e.endedUnobserved());
+        assertFalse(store.monitored("a"));
+        HistoryEvent reloaded = open().events("a").getFirst();
+        assertTrue(reloaded.endedByConfigChange());
+        assertFalse(reloaded.endedUnobserved());
+    }
+
+    @Test
+    void rememberedTargetsAccumulateAndSurviveRestart() throws IOException {
+        HistoryStore store = open();
+        store.rememberTargets("a", List.of("old.example.com", "25565"));
+        store.rememberTargets("a", List.of("new.example.com", "25565", ""));
+        assertEquals(Set.of("old.example.com", "new.example.com", "25565"), store.knownTargets("a"));
+        assertEquals(Set.of(), store.knownTargets("b"));
+        assertEquals(Set.of("old.example.com", "new.example.com", "25565"), open().knownTargets("a"));
     }
 
     @Test

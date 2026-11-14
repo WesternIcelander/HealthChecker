@@ -11,6 +11,7 @@ import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.Visibility;
 import io.siggi.healthchecker.plugin.PluginManager;
 import io.siggi.healthchecker.status.CheckRecord;
+import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.EndpointStatus;
 import io.siggi.healthchecker.status.State;
 import io.siggi.healthchecker.status.StatusRegistry;
@@ -23,6 +24,7 @@ import java.text.MessageFormat;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.ResourceBundle;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -195,6 +197,57 @@ class CheckSchedulerTest {
         assertTrue(messages("svc").stream().allMatch("ok"::equals), messages("svc").toString());
         Thread.sleep(SECOND.toMillis() * 4);
         assertEquals(oldCalls, old.calls.get(), "no stray runs of the old checker");
+    }
+
+    @Test
+    void syncAddsUpdatesAndRemovesAndReportsStopReasons() throws Exception {
+        List<String> stops = new CopyOnWriteArrayList<>();
+        scheduler.addCheckListener(new CheckScheduler.CheckListener() {
+            @Override
+            public void checked(String endpointId, CheckRecord check, StateChange change) {
+            }
+
+            @Override
+            public void stopped(String endpointId, CheckScheduler.StopReason reason) {
+                stops.add(endpointId + ":" + reason);
+            }
+        });
+        registry.add(def("keep", "ok", 1000));
+        registry.add(def("rename", "ok", 1000));
+        registry.add(def("change", "ok", 1000));
+        registry.add(def("gone", "ok", 1000));
+        scheduler.start();
+        FakeChecker renamed = checker("rename");
+        FakeChecker changed = checker("change");
+
+        assertTrue(registry.sync(List.of(def("keep", "ok", 1000),
+                def("rename", "Renamed", "ok", 1000, 1, ""),
+                def("change", "change", "ok", 1000, 1, "v2"),
+                def("new", "ok", 1000))).isEmpty());
+
+        assertEquals(List.of("keep", "rename", "change", "new"),
+                registry.all().stream().map(Endpoint::id).toList());
+        assertSame(renamed, checker("rename"));
+        assertEquals("Renamed", registry.get("rename").orElseThrow().name());
+        assertNotSame(changed, checker("change"));
+        assertEquals(Set.of("gone:REMOVED", "change:REPLACED"), Set.copyOf(stops));
+        await("new endpoint checked", () -> status.status("new").map(s -> s.state() == State.UP).orElse(false));
+        await("replaced checker closed", () -> changed.closed.get());
+        assertFalse(renamed.closed.get());
+    }
+
+    @Test
+    void syncKeepsTheOldEndpointWhenTheNewDefinitionFails() throws Exception {
+        registry.add(def("svc", "ok", 1000));
+        FakeChecker old = checker("svc");
+        JsonObject bad = new JsonObject();
+        bad.addProperty("unread", "x");
+        EndpointDefinition invalid = new EndpointDefinition("svc", "svc", "fake", null, Visibility.PUBLIC, 1, 1000,
+                1, List.of(), List.of(30, 60, 120), 0, bad);
+        var failures = registry.sync(List.of(invalid, def("other", "ok", 1000)));
+        assertEquals(Set.of("svc"), failures.keySet());
+        assertSame(old, checker("svc"));
+        assertTrue(registry.get("other").isPresent(), "other changes still apply");
     }
 
     @Test

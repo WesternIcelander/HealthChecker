@@ -130,6 +130,40 @@ public final class EndpointRegistry {
         return true;
     }
 
+    /**
+     * Makes the registry match {@code definitions} (e.g. after the endpoints were edited in the
+     * dashboard): endpoints not in the list are removed, new ones added, and existing ones
+     * {@linkplain #update updated} (in place or replaced, as the change requires). An endpoint
+     * whose add or update fails is left as it was (missing, or with its old definition) and the
+     * failure is returned; every other change is still applied.
+     *
+     * @return the failures by endpoint id, in list order; empty if everything was applied
+     */
+    public synchronized Map<String, ConfigException> sync(List<EndpointDefinition> definitions) {
+        Map<String, EndpointDefinition> wanted = new LinkedHashMap<>();
+        for (EndpointDefinition d : definitions) {
+            wanted.put(d.id(), d);
+        }
+        for (String id : new ArrayList<>(endpoints.keySet())) {
+            if (!wanted.containsKey(id)) {
+                remove(id);
+            }
+        }
+        Map<String, ConfigException> failures = new LinkedHashMap<>();
+        for (EndpointDefinition d : wanted.values()) {
+            try {
+                if (endpoints.containsKey(d.id())) {
+                    update(d);
+                } else {
+                    add(d);
+                }
+            } catch (ConfigException e) {
+                failures.put(d.id(), e);
+            }
+        }
+        return failures;
+    }
+
     public synchronized Optional<Endpoint> get(String id) {
         return Optional.ofNullable(endpoints.get(id));
     }

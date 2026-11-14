@@ -74,4 +74,11 @@ public record HistoryEvent(String id, String endpointId, Kind kind, Instant star
         return new HistoryEvent(id, endpointId, kind, start, closeAt, title, firstFailureMessage, lastFailureMessage,
                 lastFailureAt, notes, unobserved, endedByConfigChange, maintenanceId);
     }
+
+    /** Closed at {@code at} because the endpoint's check was replaced by a config change. */
+    HistoryEvent closedByConfigChange(Instant at) {
+        Instant closeAt = at.isBefore(start) ? start : at;
+        return new HistoryEvent(id, endpointId, kind, start, closeAt, title, firstFailureMessage, lastFailureMessage,
+                lastFailureAt, notes, false, true, maintenanceId);
+    }
 }

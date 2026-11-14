@@ -227,4 +227,16 @@ class ViewFilterTest {
         assertThrows(IllegalArgumentException.class, () -> filter.event(PRIVILEGED,
                 endpoint("a", Visibility.PUBLIC), event("b", null, "x", "y")));
     }
+
+    @Test
+    void pastTargetsAreLeakFilteredButNeverShown() {
+        Endpoint ep = endpoint("web", Visibility.PUBLIC).withPastTargets(List.of("Old-Host.example.org"));
+        assertTrue(ViewFilter.leaks(ep, "cannot reach old-host.EXAMPLE.org"));
+        assertTrue(ViewFilter.leaks(ep, "timeout at secret.example.com"));
+        assertFalse(ViewFilter.leaks(ep, "connection refused"));
+        Optional<EndpointView> anon = filter.endpoint(Viewer.ANONYMOUS, ep,
+                status("web", record(T0, CheckResult.fail("cannot reach old-host.example.org"))));
+        assertNull(anon.orElseThrow().lastCheck().message());
+        assertEquals(ep.targets(), filter.endpoint(PRIVILEGED, ep, null).orElseThrow().targets());
+    }
 }
