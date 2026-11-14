@@ -6,7 +6,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetAddress;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,10 +18,6 @@ class TrustedProxiesTest {
         InetAddress a = IpRange.parseAddress(s);
         if (a == null) throw new IllegalArgumentException(s);
         return a;
-    }
-
-    private static String client(TrustedProxies p, String nextHop, String... xff) {
-        return p.clientAddress(ip(nextHop), xff.length == 0 ? null : List.of(xff)).getHostAddress();
     }
 
     @Test
@@ -55,46 +50,5 @@ class TrustedProxiesTest {
         assertNull(IpRange.parseAddress("localhost"));
         assertNull(IpRange.parseAddress("unknown"));
         assertNull(IpRange.parseAddress(""));
-    }
-
-    @Test
-    void untrustedPeerHeadersIgnored() {
-        TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.1"));
-        assertEquals("203.0.113.1", client(p, "203.0.113.1", "198.51.100.2"));
-        assertEquals("127.0.0.1", client(p, "127.0.0.1", "198.51.100.2"));
-    }
-
-    @Test
-    void noTrustedProxiesMeansNoForwarding() {
-        TrustedProxies p = TrustedProxies.parse(List.of());
-        assertEquals("127.0.0.1", client(p, "127.0.0.1", "198.51.100.2"));
-    }
-
-    @Test
-    void trustedPeer() {
-        TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.0/8", "::1"));
-        assertEquals("10.0.0.1", client(p, "10.0.0.1"));
-        assertEquals("198.51.100.2", client(p, "10.0.0.1", "198.51.100.2"));
-        assertEquals("198.51.100.2", client(p, "::1", "198.51.100.2"));
-        assertEquals("2001:db8:0:0:0:0:0:1", client(p, "10.0.0.1", "[2001:db8::1]"));
-    }
-
-    @Test
-    void chainWalksRightToLeftUntilUntrusted() {
-        TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.0/8"));
-        // Spoofed leftmost entries are never reached.
-        assertEquals("198.51.100.7", client(p, "10.0.0.1", "192.0.2.66, 198.51.100.7, 10.2.3.4"));
-        // Several header lines are one list.
-        assertEquals("198.51.100.7", client(p, "10.0.0.1", "192.0.2.66", "198.51.100.7, 10.2.3.4"));
-        // All hops trusted: the leftmost is the client.
-        assertEquals("10.9.9.9", client(p, "10.0.0.1", "10.9.9.9, 10.2.3.4"));
-    }
-
-    @Test
-    void invalidEntryStopsTheWalk() {
-        TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.0/8"));
-        assertEquals("10.0.0.1", client(p, "10.0.0.1", "unknown"));
-        assertEquals("10.2.3.4", client(p, "10.0.0.1", "198.51.100.7, garbage, 10.2.3.4"));
-        assertEquals("10.0.0.1", client(p, "10.0.0.1", "198.51.100.7, "));
     }
 }

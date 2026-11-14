@@ -10,11 +10,9 @@ import java.util.List;
 /**
  * The configured {@code server.trustedProxies}, and the client address they report.
  * <p>
- * {@link WebServer} gives SiggiHTTP exactly these addresses, so {@link HTTPRequest#isSecure()} only
- * believes {@code X-Forwarded-Proto} from them. The client address is still worked out here from the
- * socket's peer ({@link HTTPRequest#getNextHopAddress()}) and {@code X-Forwarded-For}, because
- * {@link HTTPRequest#getIPAddress()} also believes {@code CF-Connecting-IP} from any trusted peer,
- * which a proxy that doesn't strip it would pass through from the client.
+ * {@link WebServer} gives SiggiHTTP exactly these addresses, so {@link HTTPRequest#isSecure()} and
+ * {@link HTTPRequest#getIPAddress()} only believe {@code X-Forwarded-Proto} and {@code X-Forwarded-For}
+ * from them.
  */
 public final class TrustedProxies {
     private final List<IpRange> ranges;
@@ -43,43 +41,18 @@ public final class TrustedProxies {
         return false;
     }
 
-    /** The client's address: the connection's peer, or what trusted proxies report in {@code X-Forwarded-For}. */
-    public InetAddress clientAddress(HTTPRequest request) {
-        return clientAddress(request.getNextHopAddress().getAddress(), request.getHeaders("X-Forwarded-For"));
-    }
-
     /**
-     * Walks {@code X-Forwarded-For} from the right (nearest hop first) while the current hop is a
-     * trusted proxy. Stops at the first untrusted hop, or at an entry that isn't an IP literal
-     * (then the last trusted hop is the client). An untrusted peer's headers are ignored entirely.
-     *
-     * @param nextHop       the connection's peer address
-     * @param forwardedFor  the {@code X-Forwarded-For} header lines in order, or {@code null}
+     * The client's address: SiggiHTTP's {@link HTTPRequest#getIPAddress()}, which is the connection's
+     * peer, or what trusted proxies report in {@code X-Forwarded-For} (walked from the right while the
+     * hop is trusted). {@link WebServer} limits SiggiHTTP's trusted IPs to these ranges.
      */
-    public InetAddress clientAddress(InetAddress nextHop, List<String> forwardedFor) {
-        InetAddress client = nextHop;
-        if (forwardedFor == null || forwardedFor.isEmpty()) return client;
-        List<String> hops = splitList(forwardedFor);
-        for (int i = hops.size() - 1; i >= 0 && isTrusted(client); i--) {
-            InetAddress hop = IpRange.parseAddress(hops.get(i));
-            if (hop == null) break;
-            client = hop;
-        }
-        return client;
+    public InetAddress clientAddress(HTTPRequest request) {
+        InetAddress address = IpRange.parseAddress(request.getIPAddress());
+        return address != null ? address : request.getNextHopAddress().getAddress();
     }
 
     /** Whether the connection's peer is a trusted proxy. */
     public boolean isFromTrustedProxy(HTTPRequest request) {
         return isTrusted(request.getNextHopAddress().getAddress());
-    }
-
-    private static List<String> splitList(List<String> headerLines) {
-        List<String> out = new ArrayList<>();
-        for (String line : headerLines) {
-            for (String part : line.split(",", -1)) {
-                out.add(part.trim());
-            }
-        }
-        return out;
     }
 }

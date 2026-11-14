@@ -1299,11 +1299,9 @@ them; see CLAUDE.md.
   `clearTrustedIPs()` (no private ranges, loopback or Cloudflare) and `trustIP()` for each entry; an entry
   SiggiHTTP can't parse is a startup error. HTTPS = `request.isSecure()`, i.e. `X-Forwarded-Proto: https`
   from a trusted peer (the whole header value, so the proxy must overwrite it rather than append). The
-  client address doesn't use `request.getIPAddress()`, which also believes `CF-Connecting-IP` from any
-  trusted peer: `TrustedProxies` starts from the socket peer (`getNextHopAddress()`) and, while the
-  current hop is trusted, walks `X-Forwarded-For` (all header lines, comma-separated) from the right;
-  it stops at the first untrusted hop or at an entry that isn't an IP literal (then the last trusted
-  hop is the client).
+  client address is `request.getIPAddress()`: the socket peer, or, from a trusted peer, `X-Forwarded-For`
+  walked from the right while the hop is trusted, stopping at an entry that isn't an IP literal.
+  `CF-Connecting-IP` is ignored (SiggiHTTP no longer reads it).
 - `ViewFilter` (app, package `web.view`): builds `EndpointView` / `CheckView` / `EventView` / `NoteView`
   records from an `Endpoint`, its `EndpointStatus`, `CheckRecord`s and `HistoryEvent`s for a `Viewer`
   (user name + `view.private`); a field the viewer may not see is `null`. Uptime and day summaries

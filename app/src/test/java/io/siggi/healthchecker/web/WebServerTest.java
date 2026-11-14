@@ -89,7 +89,7 @@ class WebServerTest {
 
     @Test
     void forwardedForIgnoredWithoutTrustedProxies() throws Exception {
-        // SiggiHTTP itself always trusts loopback; HealthChecker must not.
+        // SiggiHTTP trusts loopback by default; HealthChecker clears that.
         WebServer server = start();
         HttpResponse<String> r = get(server, "/whoami",
                 "X-Forwarded-For", "203.0.113.5", "X-Forwarded-Proto", "https");
@@ -118,6 +118,43 @@ class WebServerTest {
         // The leftmost entry is client-supplied and unverifiable; 198.51.100.7 was added by our proxy chain.
         HttpResponse<String> r = get(server, "/whoami", "X-Forwarded-For", "192.0.2.66, 198.51.100.7, 10.1.2.3");
         assertEquals("198.51.100.7 http", r.body());
+    }
+
+    @Test
+    void forwardedForAllTrustedHopsGivesLeftmost() throws Exception {
+        WebServer server = start("127.0.0.0/8", "10.0.0.0/8");
+        assertEquals("10.9.9.9 http", get(server, "/whoami", "X-Forwarded-For", "10.9.9.9, 10.2.3.4").body());
+    }
+
+    @Test
+    void forwardedForInvalidEntryStopsTheWalk() throws Exception {
+        WebServer server = start("127.0.0.0/8", "10.0.0.0/8");
+        assertEquals("127.0.0.1 http", get(server, "/whoami", "X-Forwarded-For", "unknown").body());
+        assertEquals("10.2.3.4 http",
+                get(server, "/whoami", "X-Forwarded-For", "198.51.100.7, garbage, 10.2.3.4").body());
+    }
+
+    @Test
+    void forwardedForIpv6() throws Exception {
+        WebServer server = start("127.0.0.1");
+        String body = get(server, "/whoami", "X-Forwarded-For", "2001:db8::1").body();
+        assertEquals("2001:db8:0:0:0:0:0:1 http", body);
+    }
+
+    @Test
+    void forwardedForProxyAddedHeaderLine() throws Exception {
+        // A proxy that adds its own header line after the client's: the proxy's line decides.
+        WebServer server = start("127.0.0.0/8", "10.0.0.0/8");
+        assertEquals("198.51.100.7 http", get(server, "/whoami",
+                "X-Forwarded-For", "192.0.2.66", "X-Forwarded-For", "198.51.100.7, 10.1.2.3").body());
+    }
+
+    @Test
+    void cfConnectingIpIgnored() throws Exception {
+        WebServer server = start("127.0.0.1");
+        assertEquals("127.0.0.1 http", get(server, "/whoami", "CF-Connecting-IP", "203.0.113.9").body());
+        assertEquals("198.51.100.7 http", get(server, "/whoami",
+                "X-Forwarded-For", "198.51.100.7", "CF-Connecting-IP", "203.0.113.9").body());
     }
 
     @Test
