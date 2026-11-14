@@ -1120,7 +1120,7 @@ test list are build, docs or manual steps.
 ### M16 — Packaging & ops
 - [x] Shutdown hook: final coverage heartbeat, stop scheduler, flush pending notifications (bounded), close checkers, kill HTTP server. **Tests:** shutdown closes checkers and writes final coverage within the time limit.
 - [x] `mvn package` → runnable app jar; verify by starting it with `config.example.json`-derived test config and the MinecraftChecker jar in `plugins/`, checking `/health`, `/api/status` and `/`, then stopping it cleanly.
-- [ ] README: build, configure (`maxClass`, visibility, roles, history, auth, notifications, reminders, maintenance, sites), run, reverse proxy notes, backup of `data/`; sample systemd unit.
+- [x] README: build, configure (`maxClass`, visibility, roles, history, auth, notifications, reminders, maintenance, sites), run, reverse proxy notes, backup of `data/`; sample systemd unit.
 - [ ] `PLUGINS.md`: writing a plugin (API, `settings()` / `SettingSpec`, `declareTarget`, Gson contract, services file, threading/timeout rules, minimal example, pointer to MinecraftChecker).
 
 ### M17 — Acceptance with real services (you)
