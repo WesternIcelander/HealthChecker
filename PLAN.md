@@ -1110,7 +1110,7 @@ test list are build, docs or manual steps.
 
 ### M14 — Notifications: framework, reminders & Discord
 - [x] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
-- [ ] Reminders: schedule from outage start per `reminders` (+ optional `reminderRepeatMinutes`); cancel on recovery; persisted in `data/notifications/state.json`; overdue-after-restart sent once. **Tests:** with a fake clock: reminders at 30/60/120 and none after; none after recovery; repeat interval; restart mid-outage sends the overdue one once.
+- [x] Reminders: schedule from outage start per `reminders` (+ optional `reminderRepeatMinutes`); cancel on recovery; persisted in `data/notifications/state.json`; overdue-after-restart sent once. **Tests:** with a fake clock: reminders at 30/60/120 and none after; none after recovery; repeat interval; restart mid-outage sends the overdue one once.
 - [ ] `DiscordNotifier`: embeds (down/reminder/recovered), splitting, `allowed_mentions`, 429 handling; "Send test notification" (`notifications.test`). **Tests:** fake webhook server: payload shape; >10 embeds split; mention only on down/reminder; 429 then success; 4xx permanent; test button requires permission.
 - [ ] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
 
@@ -1867,3 +1867,16 @@ them; see CLAUDE.md.
   any change to DOWN → down, DOWN → UP → recovered, otherwise nothing. Parsing `notifications.batchSeconds`, the
   `StatusRegistry` listener and `Daemon` wiring come with the first notifier type (`DiscordNotifier`), since until then
   no channel can be built; `close()` drops pending messages for now (M16 adds the bounded flush).
+- Reminders (app, `notify.ReminderScheduler`): reminder `k` is due at `reminders[k]` minutes after the outage start
+  (the failure streak's first failure); past the list, at `last + n × reminderRepeatMinutes` when that is above 0. An
+  empty `reminders` list disables reminders, repeat included. The endpoint's current definition is read every time the
+  next reminder is planned (`refresh(id)` re-plans after an edit). Slots already past when DOWN is declared (a slow
+  failure threshold) are skipped, since the down notification covers them. When several slots are due at once (only
+  after a restart), one reminder is sent and every one of those slots counts as used. `data/notifications/state.json`
+  is `{"reminders":[{"endpointId","outageStart","sent"}]}`, rewritten atomically on every change and saved before the
+  reminder is queued; an unreadable file is logged and ignored, entries for endpoints that no longer exist are dropped.
+  State changes: any change to DOWN starts reminders, any change to UP (including UNKNOWN → UP after a restart) cancels
+  them. After a restart, the first UNKNOWN → DOWN continues a restored entry (same outage start, nothing re-sent)
+  instead of starting over. Like the dispatcher, the `StatusRegistry` listener, the `cancel(id)` on endpoint removal or
+  replacement (`endedByConfigChange`) and the `Daemon` wiring come with `DiscordNotifier`. Reminders are sent with
+  `NotificationDispatcher.notify`, so they follow the endpoint's routing and batching.
