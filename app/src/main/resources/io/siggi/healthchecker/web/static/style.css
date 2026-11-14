@@ -667,3 +667,56 @@ h2.day-title { font-size: 1.4rem; }
   color: var(--fg);
   cursor: pointer;
 }
+
+/* ---- endpoint editor ---- */
+
+.button-primary { background: var(--link); border-color: var(--link); color: #fff; }
+.ee-title { margin: 8px 0 8px; font-size: 1.2rem; }
+.ee-notice { padding: 6px 10px; border-radius: 6px; background: var(--surface); }
+.badge-config { color: var(--muted); }
+.badge-disabled { border-color: var(--down); color: var(--down); }
+.ee-override { color: var(--muted); font-weight: normal; }
+.form-error-list { margin: 4px 0 12px; padding-left: 20px; color: var(--down); font-size: 0.9rem; }
+.ee-list { list-style: none; margin: 0; padding: 0; }
+.ee-item {
+  padding: 6px 10px;
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.ee-item .form-error-list { margin: 4px 0 0; }
+.endpoint-form { max-width: 40rem; }
+.endpoint-form fieldset.ee-all { border: 0; margin: 0; padding: 0; min-width: 0; }
+.ee-group {
+  margin: 0 0 14px;
+  padding: 8px 12px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+.ee-group legend { padding: 0 4px; font-weight: 600; }
+.field { margin: 0 0 10px; }
+.field-label { display: block; margin-bottom: 2px; font-weight: 600; font-size: 0.9rem; }
+.field-help { margin: 2px 0 0; font-size: 0.8rem; }
+.field-error { margin: 2px 0 0; font-size: 0.85rem; }
+.field-invalid .field-label, .field:has([aria-invalid="true"]) .field-label { color: var(--down); }
+.endpoint-form input[type="text"], .endpoint-form select, .endpoint-form textarea {
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.endpoint-form [aria-invalid="true"] { border-color: var(--down); }
+.endpoint-form :disabled { opacity: 0.75; }
+.ee-type-row { display: flex; gap: 6px; align-items: center; }
+.ee-type-row select { flex: 1 1 auto; min-width: 0; }
+.ee-choices { display: flex; flex-direction: column; gap: 2px; font-size: 0.9rem; }
+.ee-channels { display: flex; flex-wrap: wrap; gap: 4px 12px; padding-left: 22px; }
+.ee-check { font-weight: normal; }
+.ee-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
+.ee-actions [hidden], .ee-type-row [hidden] { display: none; }

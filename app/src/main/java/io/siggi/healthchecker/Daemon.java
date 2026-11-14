@@ -20,6 +20,7 @@ import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.page.EndpointEditor;
 import io.siggi.healthchecker.web.page.EventEditor;
 import io.siggi.healthchecker.web.page.LayoutEditor;
 import io.siggi.healthchecker.web.page.LoginPage;
@@ -82,12 +83,18 @@ final class Daemon implements AutoCloseable {
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
                 endpoints::categoryConfigs, endpoints::definitions);
         layoutEditor.register(web);
-        new StatusPage(sites, layoutEditor::layout,
-                registry::get, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor)
-                .register(web);
-        new ServicePage(sites, () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
+        EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config);
+        endpointEditor.register(web);
+        StatusPage statusPage = new StatusPage(sites, layoutEditor::layout,
+                registry::get, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);
+        statusPage.endpointEditor(endpointEditor);
+        statusPage.register(web);
+        ServicePage servicePage = new ServicePage(sites,
+                () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
                 registry::get, status::status, permissions::viewer, uptime, history, clock,
-                config.dashboard(), new EventEditor(permissions, sessions, history)).register(web);
+                config.dashboard(), new EventEditor(permissions, sessions, history));
+        servicePage.endpointEditor(endpointEditor);
+        servicePage.register(web);
     }
 
     /**

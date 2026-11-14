@@ -376,12 +376,37 @@
     target.scrollIntoView();
   }
 
+  // ---- endpoint editor ----
+  // Without JS the form has two steps ("Continue" after choosing the type). With JS, changing the
+  // type swaps in that type's settings from its <template> right away.
+
+  function initEndpointEditor() {
+    var form = document.querySelector("form.endpoint-form");
+    var select = form && form.querySelector("select.ee-type");
+    var target = form && form.querySelector(".ee-settings");
+    if (!select || !target) return;
+    var step = form.querySelector(".ee-type-step");
+    if (step) step.hidden = true;
+    select.addEventListener("change", function () {
+      var templates = document.querySelectorAll("template.ee-settings-template");
+      var template = null;
+      for (var i = 0; i < templates.length; i++) {
+        if (templates[i].getAttribute("data-type") === select.value) template = templates[i];
+      }
+      target.textContent = "";
+      if (template) target.appendChild(template.content.cloneNode(true));
+      var save = form.querySelector(".ee-save");
+      if (save) save.hidden = !template;
+    });
+  }
+
   function init() {
     document.documentElement.classList.add("js");
     initEventEdits();
     initTooltips();
     initDayPopover();
     initLayoutEditor();
+    initEndpointEditor();
   }
 
   if (document.readyState === "loading") {

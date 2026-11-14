@@ -1088,7 +1088,7 @@ test list are build, docs or manual steps.
 
 ### M11 — Endpoint & category management in the dashboard
 - [x] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
-- [ ] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
+- [x] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
 - [ ] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
 - [ ] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
 - [ ] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
@@ -1569,3 +1569,22 @@ them; see CLAUDE.md.
   "Other"). Config endpoints may only use config categories (config validation doesn't see the file). `run` loads the
   store after validating the config's endpoints and checks the merged, enabled endpoints; layout and pages use the
   merged lists. Live application of later edits comes with the "Save applies live" step.
+- Endpoint editor (app, `web.page.EndpointEditor`): `GET /admin/endpoints` lists every endpoint of both sources
+  ("config" badge, disabled ones with their errors) with "Add service"; `/admin/endpoints/new` and `/admin/endpoints/{id}`
+  are the forms (GET shows, POST submits; plain form POSTs with `csrf`). Access needs `endpoints.manage` **and**
+  `view.private` (the editor shows private endpoints and targets), like the layout editor: anonymous visitors go to
+  `/login`, others get `403`; then CSRF. The main page shows "Add service" / "Manage services" and the service page an
+  "Edit" link to users who may use it. Field names: the common JSON keys, `notifyMode` (`default` / `none` / `channels`)
+  with `notify.{channel}` checkboxes, `s.{key}` for type settings, `settingsFor` (the type whose fields were sent),
+  `version` and `action` (`type` = re-render, `save`). Blank common fields are left out of the entry (so `defaults`
+  apply; fields that are set show "overrides default"); reminders are comma-separated minutes or `none` (`[]`). Settings
+  by kind: text inputs for STRING/INTEGER, a not set/yes/no select for BOOLEAN, a select for CHOICE, a textarea (one per
+  line) for STRING_LIST; empty values are left out; a plugin's `defaultValue` pre-fills the field when a type is first
+  chosen. Non-numeric numbers are form errors; everything else is validated by `EndpointStore.putEndpoint` (config
+  parser + plugin `create()`), whose `key: message` errors are shown on the field with that key (others above the
+  form); `400` with the values kept, `409` (stale `version`) re-renders with the current version. Keys of a stored entry
+  that the type's `settings()` doesn't describe aren't shown and are dropped on save. Without JS the form has two steps
+  ("Continue" posts `action=type`); with JS, `app.js` swaps in the type's fields from a `<template>`. A config-defined
+  endpoint is a read-only view (disabled fieldset, effective values) and its POST is `403`; a new id already used by
+  either source is a field error. After saving, the editor redirects to `/admin/endpoints/{id}?saved=1`; applying the
+  change live comes with the next step.

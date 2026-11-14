@@ -93,6 +93,7 @@ public final class ServicePage {
     private final Clock clock;
     private final DashboardConfig dashboard;
     private final EventEditor editor;
+    private volatile EndpointEditor endpointEditor;
     private final ViewFilter filter = new ViewFilter();
 
     /**
@@ -127,6 +128,11 @@ public final class ServicePage {
         this.history = history;
         this.clock = clock;
         this.dashboard = dashboard;
+    }
+
+    /** Adds an "Edit" link to the service page for users who may use {@code endpointEditor}. */
+    public void endpointEditor(EndpointEditor endpointEditor) {
+        this.endpointEditor = endpointEditor;
     }
 
     public void register(WebServer server) {
@@ -484,6 +490,12 @@ public final class ServicePage {
         PageSupport.head(html, site, service.view().name() + " – " + site.title(), false, service.viewer());
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n");
         headerHtml(html, header(service));
+        EndpointEditor manage = endpointEditor;
+        if (manage != null && manage.canManage(request)) {
+            html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
+                    .append(Html.escape(site.link(EndpointEditor.PATH + "/" + service.endpoint().id())))
+                    .append("\">Edit</a></p>\n");
+        }
         // The list view is the default: any ?view= other than "calendar" shows it. A valid
         // ?day= up to today opens the calendar page containing that day, with its details open.
         LocalDate today = uptime.today();

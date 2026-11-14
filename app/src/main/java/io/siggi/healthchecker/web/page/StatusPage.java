@@ -51,6 +51,7 @@ public final class StatusPage {
     private final UptimeCalculator uptime;
     private final DashboardConfig dashboard;
     private final LayoutEditor editor;
+    private volatile EndpointEditor endpointEditor;
     private final CategoryGrouping grouping = new CategoryGrouping(new ViewFilter());
 
     /**
@@ -86,6 +87,11 @@ public final class StatusPage {
         this.viewers = viewers;
         this.uptime = uptime;
         this.dashboard = dashboard;
+    }
+
+    /** Adds "Add service" and "Manage services" links for users who may use {@code endpointEditor}. */
+    public void endpointEditor(EndpointEditor endpointEditor) {
+        this.endpointEditor = endpointEditor;
     }
 
     public void register(WebServer server) {
@@ -152,9 +158,21 @@ public final class StatusPage {
         html.append("<p class=\"banner banner-").append(overall).append("\" role=\"status\">")
                 .append("<span class=\"dot state-").append(overall).append("\" aria-hidden=\"true\"></span>")
                 .append(Html.escape(bannerText(model))).append("</p>\n");
-        if (editor != null && !model.viewer().anonymous() && editor.canEdit(request)) {
-            html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
-                    .append(Html.escape(site.link("/?edit=layout"))).append("\">Edit layout</a></p>\n");
+        if (!model.viewer().anonymous()) {
+            StringBuilder actions = new StringBuilder();
+            if (endpointEditor != null && endpointEditor.canManage(request)) {
+                actions.append("<a class=\"button\" href=\"")
+                        .append(Html.escape(site.link(EndpointEditor.PATH + "/new"))).append("\">Add service</a> ")
+                        .append("<a class=\"button\" href=\"")
+                        .append(Html.escape(site.link(EndpointEditor.PATH))).append("\">Manage services</a> ");
+            }
+            if (editor != null && editor.canEdit(request)) {
+                actions.append("<a class=\"button\" href=\"")
+                        .append(Html.escape(site.link("/?edit=layout"))).append("\">Edit layout</a>");
+            }
+            if (!actions.isEmpty()) {
+                html.append("<p class=\"page-actions\">").append(actions.toString().strip()).append("</p>\n");
+            }
         }
         for (Section section : model.sections()) {
             CategorySection category = section.category();
