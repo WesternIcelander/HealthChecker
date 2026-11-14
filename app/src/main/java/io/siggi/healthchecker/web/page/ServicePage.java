@@ -26,11 +26,16 @@ import io.siggi.http.HTTPRequest;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
@@ -47,7 +52,9 @@ import static io.siggi.healthchecker.web.page.PageSupport.write;
  * of the last check (and, for privileged viewers, type, visibility and targets). Below it, the
  * list view ({@code ?view=list&page=N}, the default): downtime events newest first,
  * {@value #PAGE_SIZE} per page, each expandable to show its visible notes. Each event also has a
- * permalink page, {@code /service/{id}/event/{eventId}}.
+ * permalink page, {@code /service/{id}/event/{eventId}}. The calendar view
+ * ({@code ?view=calendar&page=N}) shows {@value #CALENDAR_MONTHS} months per page as Monday-first
+ * grids of colour-only day blocks; page 0 ends with the current month.
  *
  * <p>Answers {@code 404} (by writing nothing) for unknown ids, for endpoints outside the
  * request's site scope (even for privileged viewers), for endpoints the viewer may not see
@@ -62,6 +69,10 @@ public final class ServicePage {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     /** Events per page of the list view. */
     static final int PAGE_SIZE = 25;
+    /** Months per page of the calendar view. */
+    static final int CALENDAR_MONTHS = 3;
+    /** The last calendar page that can be shown (1000 years back); higher page numbers show this one. */
+    static final int MAX_CALENDAR_PAGE = 4000;
 
     private final SiteResolver sites;
     private final Supplier<ResolvedLayout> layout;
@@ -121,6 +132,85 @@ public final class ServicePage {
         boolean hasOlder() {
             return page < pages - 1;
         }
+    }
+
+    /** One day block of the calendar; {@code summary} and {@code color} are {@code null} for future days. */
+    record CalendarDay(LocalDate date, DaySummary summary, DayColor color) {
+        boolean future() {
+            return summary == null;
+        }
+    }
+
+    /**
+     * One month of the calendar.
+     *
+     * @param leadingBlanks empty cells before the 1st, so that weeks start on Monday (0–6)
+     */
+    record CalendarMonth(YearMonth month, int leadingBlanks, List<CalendarDay> days) {
+    }
+
+    /** One page of the calendar view: its months, oldest first. */
+    record CalendarPage(int page, List<CalendarMonth> months) {
+        boolean hasLater() {
+            return page > 0;
+        }
+
+        boolean hasEarlier() {
+            return page < MAX_CALENDAR_PAGE;
+        }
+    }
+
+    /**
+     * The months on calendar page {@code page}, oldest first: the {@value #CALENDAR_MONTHS} months
+     * ending {@value #CALENDAR_MONTHS} × {@code page} months before {@code current}.
+     */
+    static List<YearMonth> calendarMonths(YearMonth current, int page) {
+        YearMonth last = current.minusMonths((long) CALENDAR_MONTHS * page);
+        List<YearMonth> months = new ArrayList<>(CALENDAR_MONTHS);
+        for (int i = CALENDAR_MONTHS - 1; i >= 0; i--) {
+            months.add(last.minusMonths(i));
+        }
+        return months;
+    }
+
+    /**
+     * Calendar page {@code page} (0 = the current month and the two before it, clamped to
+     * {@link #MAX_CALENDAR_PAGE}). Days up to today are coloured from their summaries; days
+     * before the endpoint's first coverage have no data (grey) and aren't computed at all;
+     * days after today are future days.
+     */
+    CalendarPage calendar(Service service, int page) {
+        String id = service.endpoint().id();
+        int shown = Math.max(0, Math.min(page, MAX_CALENDAR_PAGE));
+        LocalDate today = uptime.today();
+        LocalDate firstCovered = history.coverage(id).stream()
+                .map(p -> LocalDate.ofInstant(p.start(), uptime.zone()))
+                .min(Comparator.naturalOrder()).orElse(null);
+        List<CalendarMonth> months = new ArrayList<>(CALENDAR_MONTHS);
+        for (YearMonth month : calendarMonths(YearMonth.from(today), shown)) {
+            LocalDate first = month.atDay(1);
+            LocalDate last = month.atEndOfMonth();
+            Map<LocalDate, DaySummary> computed = new HashMap<>();
+            if (firstCovered != null) {
+                LocalDate from = first.isBefore(firstCovered) ? firstCovered : first;
+                LocalDate to = last.isAfter(today) ? today : last;
+                if (!to.isBefore(from)) {
+                    for (DaySummary day : uptime.days(id, from, to)) computed.put(day.date(), day);
+                }
+            }
+            List<CalendarDay> days = new ArrayList<>(last.getDayOfMonth());
+            for (LocalDate date = first; !date.isAfter(last); date = date.plusDays(1)) {
+                if (date.isAfter(today)) {
+                    days.add(new CalendarDay(date, null, null));
+                } else {
+                    DaySummary summary = computed.getOrDefault(date, new DaySummary(date, Uptime.NONE, 0, 0));
+                    days.add(new CalendarDay(date, summary, DayColor.of(summary, dashboard)));
+                }
+            }
+            int blanks = first.getDayOfWeek().getValue() - DayOfWeek.MONDAY.getValue();
+            months.add(new CalendarMonth(month, blanks, days));
+        }
+        return new CalendarPage(shown, months);
     }
 
     /**
@@ -216,8 +306,15 @@ public final class ServicePage {
         PageSupport.head(html, site, service.view().name() + " – " + site.title(), false);
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n");
         headerHtml(html, header(service));
-        // The list view is the only view so far (and stays the default), so any ?view= shows it.
-        listHtml(html, service, events(service, pageNumber(request.get().get("page"))));
+        // The list view is the default: any ?view= other than "calendar" shows it.
+        boolean calendar = "calendar".equals(request.get().get("view"));
+        tabsHtml(html, service, calendar);
+        int page = pageNumber(request.get().get("page"));
+        if (calendar) {
+            calendarHtml(html, service, calendar(service, page));
+        } else {
+            listHtml(html, service, events(service, page));
+        }
         PageSupport.foot(html, site);
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
     }
@@ -253,6 +350,65 @@ public final class ServicePage {
         html.append("</article>\n");
         PageSupport.foot(html, site);
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
+    }
+
+    /** The view tabs: plain links, the current one marked with {@code aria-current}. */
+    private static void tabsHtml(StringBuilder html, Service service, boolean calendar) {
+        String base = PREFIX + service.view().id() + "?view=";
+        html.append("<nav class=\"tabs\" aria-label=\"Views\">");
+        tab(html, service.site().link(base + "list"), "List", !calendar);
+        tab(html, service.site().link(base + "calendar"), "Calendar", calendar);
+        html.append("</nav>\n");
+    }
+
+    private static void tab(StringBuilder html, String href, String label, boolean current) {
+        html.append("<a class=\"tab").append(current ? " tab-current" : "").append("\" href=\"").append(Html.escape(href))
+                .append('"').append(current ? " aria-current=\"page\"" : "").append('>').append(label).append("</a>");
+    }
+
+    /**
+     * The calendar view: each month a Monday-first grid of day blocks without text, coloured
+     * like the bar (future days are empty outlines), with Earlier/Later links.
+     */
+    private void calendarHtml(StringBuilder html, Service service, CalendarPage page) {
+        Site site = service.site();
+        String base = PREFIX + service.view().id() + "?view=calendar&page=";
+        html.append("<section class=\"calendar\" id=\"calendar\">\n<h3 class=\"visually-hidden\">Calendar</h3>\n")
+                .append("<div class=\"cal-months\">\n");
+        for (CalendarMonth month : page.months()) {
+            String title = month.month().getMonth().getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + month.month().getYear();
+            html.append("<div class=\"cal-month\" data-month=\"").append(month.month()).append("\">\n")
+                    .append("<h4 class=\"cal-month-title\">").append(title).append("</h4>\n")
+                    .append("<div class=\"cal-grid\" role=\"group\" aria-label=\"").append(title).append("\">");
+            for (DayOfWeek weekday : DayOfWeek.values()) {
+                html.append("<span class=\"cal-weekday\" aria-hidden=\"true\">")
+                        .append(weekday.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), 0, 2).append("</span>");
+            }
+            for (int i = 0; i < month.leadingBlanks(); i++) {
+                html.append("<span class=\"cal-blank\" aria-hidden=\"true\"></span>");
+            }
+            for (CalendarDay day : month.days()) {
+                String tip = day.future() ? day.date() + ": upcoming" : PageSupport.tooltip(day.summary());
+                html.append("<span class=\"cal-day cal-").append(day.future() ? "future" : day.color().id())
+                        .append("\" data-date=\"").append(day.date()).append("\" role=\"img\" title=\"").append(Html.escape(tip))
+                        .append("\" aria-label=\"").append(Html.escape(tip)).append("\"></span>");
+            }
+            html.append("</div>\n</div>\n");
+        }
+        html.append("</div>\n<nav class=\"pager\" aria-label=\"Calendar pages\">");
+        if (page.hasEarlier()) {
+            html.append("<a rel=\"next\" href=\"").append(Html.escape(site.link(base + (page.page() + 1))))
+                    .append("#calendar\">← Earlier</a>");
+        } else {
+            html.append("<span></span>");
+        }
+        if (page.hasLater()) {
+            html.append("<a rel=\"prev\" href=\"").append(Html.escape(site.link(base + (page.page() - 1))))
+                    .append("#calendar\">Later →</a>");
+        } else {
+            html.append("<span></span>");
+        }
+        html.append("</nav>\n</section>\n");
     }
 
     /** The list view: events newest first, each a {@code <details>} with its notes, plus paging links. */

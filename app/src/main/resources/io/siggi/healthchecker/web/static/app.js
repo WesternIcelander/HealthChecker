@@ -7,7 +7,7 @@
   // Replaces the native title tooltip of elements with [title][data-tip] by one that also
   // shows on keyboard focus and stays inside the viewport.
   function initTooltips() {
-    var targets = document.querySelectorAll(".seg[title], .check[title]");
+    var targets = document.querySelectorAll(".seg[title], .check[title], .cal-day[title]");
     if (!targets.length) return;
     tooltip = document.createElement("div");
     tooltip.className = "tooltip";

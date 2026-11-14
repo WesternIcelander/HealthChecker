@@ -36,6 +36,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.YearMonth;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -490,6 +491,157 @@ class ServicePageTest {
         assertEquals(404, get(server, "/service/nope/event/ev-1", "status.example.com").status());
         assertEquals(404, get(server, "/service/website/event/ev-1", "mc-status.example.com").status());
         assertEquals(200, get(server, "/service/survival/event/ev-3", "mc-status.example.com").status());
+    }
+
+    // ---- calendar view ----
+
+    private static List<String> months(String body) {
+        List<String> months = new ArrayList<>();
+        Matcher m = Pattern.compile("<div class=\"cal-month\" data-month=\"([0-9-]+)\">").matcher(body);
+        while (m.find()) months.add(m.group(1));
+        return months;
+    }
+
+    /** Colour class of each day block of one month, in order. */
+    private static List<String> dayColors(String body, String month) {
+        int start = body.indexOf("data-month=\"" + month + "\"");
+        assertTrue(start >= 0, month);
+        int end = body.indexOf("</div>\n</div>", start);
+        List<String> colors = new ArrayList<>();
+        Matcher m = Pattern.compile("<span class=\"cal-day cal-([a-z]+)\" data-date=\"" + month
+                + "-[0-9]{2}\"[^>]*></span>").matcher(body.substring(start, end));
+        while (m.find()) colors.add(m.group(1));
+        return colors;
+    }
+
+    private static int blanks(String body, String month) {
+        int start = body.indexOf("data-month=\"" + month + "\"");
+        int end = body.indexOf("class=\"cal-day ", start);
+        return count(body.substring(start, end), "class=\"cal-blank\"");
+    }
+
+    @Test
+    void calendarMonthRanges() {
+        YearMonth nov = YearMonth.of(2026, 11);
+        assertEquals(List.of(YearMonth.of(2026, 9), YearMonth.of(2026, 10), nov), ServicePage.calendarMonths(nov, 0));
+        assertEquals(List.of(YearMonth.of(2026, 6), YearMonth.of(2026, 7), YearMonth.of(2026, 8)),
+                ServicePage.calendarMonths(nov, 1));
+        assertEquals(List.of(YearMonth.of(2026, 3), YearMonth.of(2026, 4), YearMonth.of(2026, 5)),
+                ServicePage.calendarMonths(nov, 2));
+        // Year rollover inside page 0 and between pages.
+        YearMonth jan = YearMonth.of(2027, 1);
+        assertEquals(List.of(YearMonth.of(2026, 11), YearMonth.of(2026, 12), jan), ServicePage.calendarMonths(jan, 0));
+        assertEquals(List.of(YearMonth.of(2026, 8), YearMonth.of(2026, 9), YearMonth.of(2026, 10)),
+                ServicePage.calendarMonths(jan, 1));
+        assertEquals(List.of(YearMonth.of(2026, 1), YearMonth.of(2026, 2), YearMonth.of(2026, 3)),
+                ServicePage.calendarMonths(YearMonth.of(2026, 3), 0));
+        assertEquals(List.of(YearMonth.of(2025, 10), YearMonth.of(2025, 11), YearMonth.of(2025, 12)),
+                ServicePage.calendarMonths(YearMonth.of(2026, 3), 1));
+    }
+
+    @Test
+    void calendarPaging() throws Exception {
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        String page0 = get(server, "/service/website?view=calendar", "status.example.com").body();
+        assertEquals(List.of("2026-09", "2026-10", "2026-11"), months(page0));
+        assertTrue(page0.contains("<h4 class=\"cal-month-title\">September 2026</h4>"));
+        assertTrue(page0.contains("<a rel=\"next\" href=\"/service/website?view=calendar&amp;page=1#calendar\">← Earlier</a>"));
+        assertFalse(page0.contains("Later"));
+        assertEquals(page0, get(server, "/service/website?view=calendar&page=0", "status.example.com").body());
+
+        String page1 = get(server, "/service/website?view=calendar&page=1", "status.example.com").body();
+        assertEquals(List.of("2026-06", "2026-07", "2026-08"), months(page1));
+        assertTrue(page1.contains("<a rel=\"prev\" href=\"/service/website?view=calendar&amp;page=0#calendar\">Later →</a>"));
+        assertTrue(page1.contains("<a rel=\"next\" href=\"/service/website?view=calendar&amp;page=2#calendar\">← Earlier</a>"));
+
+        String page2 = get(server, "/service/website?view=calendar&page=2", "status.example.com").body();
+        assertEquals(List.of("2026-03", "2026-04", "2026-05"), months(page2));
+        assertTrue(page2.contains("href=\"/service/website?view=calendar&amp;page=1#calendar\">Later →</a>"));
+
+        // Year rollover: page 3 spans Dec 2025 – Feb 2026, page 4 is Sep – Nov 2025.
+        assertEquals(List.of("2025-12", "2026-01", "2026-02"),
+                months(get(server, "/service/website?view=calendar&page=3", "status.example.com").body()));
+        assertEquals(List.of("2025-09", "2025-10", "2025-11"),
+                months(get(server, "/service/website?view=calendar&page=4", "status.example.com").body()));
+
+        // Invalid page numbers show page 0; huge ones the last page, without "Earlier".
+        assertEquals(months(page0), months(get(server, "/service/website?view=calendar&page=-1", "status.example.com").body()));
+        String last = get(server, "/service/website?view=calendar&page=999999999", "status.example.com").body();
+        assertEquals(List.of("1026-09", "1026-10", "1026-11"), months(last));
+        assertFalse(last.contains("Earlier"));
+        assertTrue(last.contains("page=3999#calendar\">Later →</a>"));
+    }
+
+    @Test
+    void calendarTabs() throws Exception {
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        String list = get(server, "/service/website", "status.example.com").body();
+        assertTrue(list.contains("<a class=\"tab tab-current\" href=\"/service/website?view=list\" aria-current=\"page\">List</a>"
+                + "<a class=\"tab\" href=\"/service/website?view=calendar\">Calendar</a>"));
+        assertFalse(list.contains("class=\"calendar\""));
+        String calendar = get(server, "/service/website?view=calendar", "status.example.com").body();
+        assertTrue(calendar.contains("<a class=\"tab\" href=\"/service/website?view=list\">List</a>"
+                + "<a class=\"tab tab-current\" href=\"/service/website?view=calendar\" aria-current=\"page\">Calendar</a>"));
+        assertFalse(calendar.contains("class=\"events\""));
+        // Unknown views show the list.
+        assertTrue(get(server, "/service/website?view=nope", "status.example.com").body().contains("class=\"events\""));
+        // The 404 rules apply to the calendar too.
+        assertEquals(404, get(server, "/service/intranet?view=calendar", "status.example.com").status());
+        assertEquals(404, get(server, "/service/website?view=calendar", "mc-status.example.com").status());
+    }
+
+    @Test
+    void calendarDays() throws Exception {
+        history("website", "2026-10-15T00:00:00Z", NOW.toString(),
+                event("2026-11-02T00:00:00Z", "2026-11-02T00:10:00Z"),   // 99.3 % → yellow
+                event("2026-11-03T00:00:00Z", "2026-11-03T02:00:00Z"),   // 91.6 % → red
+                event("2026-11-04T00:00:00Z", "2026-11-04T01:00:00Z"));  // 95.8 % → orange
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        String body = get(server, "/service/website?view=calendar", "status.example.com").body();
+
+        // September: entirely before the first coverage, so all grey.
+        List<String> sep = dayColors(body, "2026-09");
+        assertEquals(30, sep.size());
+        assertTrue(sep.stream().allMatch("grey"::equals), sep.toString());
+        // October: grey until the 14th, green from the 15th when coverage starts.
+        List<String> oct = dayColors(body, "2026-10");
+        assertEquals(31, oct.size());
+        assertTrue(oct.subList(0, 14).stream().allMatch("grey"::equals), oct.toString());
+        assertTrue(oct.subList(14, 31).stream().allMatch("green"::equals), oct.toString());
+        // November: coloured up to today (the 13th), future days afterwards.
+        List<String> nov = dayColors(body, "2026-11");
+        assertEquals(30, nov.size());
+        assertEquals(List.of("green", "yellow", "red", "orange", "green"), nov.subList(0, 5));
+        assertEquals("green", nov.get(12));
+        assertEquals(17, nov.subList(13, 30).size());
+        assertTrue(nov.subList(13, 30).stream().allMatch("future"::equals), nov.toString());
+        assertTrue(body.contains("data-date=\"2026-11-02\" role=\"img\" title=\"2026-11-02: 99.3% uptime, 10m down, 1 outage\""));
+        assertTrue(body.contains("data-date=\"2026-11-20\" role=\"img\" title=\"2026-11-20: upcoming\""));
+        assertTrue(body.contains("title=\"2026-09-10: no data\""));
+
+        // Monday-first grid: Sep 2026 starts on a Tuesday, Oct on a Thursday, Nov on a Sunday.
+        assertTrue(body.contains("<span class=\"cal-weekday\" aria-hidden=\"true\">Mo</span>"
+                + "<span class=\"cal-weekday\" aria-hidden=\"true\">Tu</span>"));
+        assertTrue(body.contains("aria-hidden=\"true\">Su</span><span class=\"cal-blank\""));
+        assertEquals(1, blanks(body, "2026-09"));
+        assertEquals(3, blanks(body, "2026-10"));
+        assertEquals(6, blanks(body, "2026-11"));
+        // Colour only: no text inside any day block.
+        assertEquals(30 + 31 + 30, count(body, "class=\"cal-day "));
+        Matcher empty = Pattern.compile("<span class=\"cal-day [^>]*></span>").matcher(body);
+        assertEquals(30 + 31 + 30, empty.results().count());
+
+        // A page entirely before the first coverage still renders, all grey.
+        String old = get(server, "/service/website?view=calendar&page=5", "status.example.com").body();
+        assertEquals(List.of("2025-06", "2025-07", "2025-08"), months(old));
+        for (String month : months(old)) {
+            assertTrue(dayColors(old, month).stream().allMatch("grey"::equals), month);
+        }
+        // An endpoint without any coverage: everything up to today grey.
+        String none = get(server, "/service/survival?view=calendar", "status.example.com").body();
+        assertTrue(dayColors(none, "2026-11").subList(0, 13).stream().allMatch("grey"::equals));
+        assertNoTargets(body);
+        assertNoTargets(none);
     }
 
     private void assertNoTargets(String body) {

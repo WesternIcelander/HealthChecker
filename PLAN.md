@@ -1064,7 +1064,7 @@ test list are build, docs or manual steps.
 ### M7 — Service page: list & calendar views
 - [x] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
 - [x] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
-- [ ] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
+- [x] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
 - [ ] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
 - [ ] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
 
@@ -1378,3 +1378,12 @@ them; see CLAUDE.md.
 - Event permalink `/service/{id}/event/{eventId}`: the same `404` rules as the service page, plus `404` for an event id
   not matching `[A-Za-z0-9-]{1,64}`, an unknown id, or an event of another endpoint. Shows the title, the service (link),
   start, end, duration, failure messages and end flags as visible, and the notes.
+- Calendar view (`web.page.ServicePage`, `?view=calendar&page=N`; any other `?view=` shows the list): "List" / "Calendar"
+  tabs are plain links (`?view=list` / `?view=calendar`, the current one with `aria-current="page"`) between the header and
+  the view. A page's three months are shown oldest first (like the bar), each a 7-column Monday-first grid with `Mo`–`Su`
+  labels above it, blank cells before the 1st, and one empty block per day coloured by `DayColor` (`cal-{colour}`), with
+  the bar's tooltip text as `title`/`aria-label` (`role="img"`); days after today are outlined `cal-future` blocks
+  ("{date}: upcoming"). Days before the endpoint's first coverage (and every day of an endpoint without coverage) are grey
+  without being computed, so old pages don't fill the day cache. `page` is parsed like the list's and clamped to 4000
+  (1000 years); "← Earlier" (`rel="next"`) is left out only on that last page and "Later →" (`rel="prev"`) on page 0, both
+  linking to `#calendar`. Until the day popover / day page step, day blocks are not links.
