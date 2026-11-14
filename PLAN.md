@@ -1069,7 +1069,7 @@ test list are build, docs or manual steps.
 - [x] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
 
 ### M8 — MinecraftChecker plugin (repo `plugin-projects/MinecraftChecker`)
-- [ ] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
+- [x] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
 - [ ] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
 - [ ] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
 - [ ] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
@@ -1411,3 +1411,5 @@ them; see CLAUDE.md.
   `from` to the 59 days before `to`; a bad date, `from` after `to` or more than 400 days is `400` with
   `{"error": …}` (checked after the `404` rules); days after today are left out, days before the first coverage are
   no-data without being computed. The response echoes `from` and `to`.
+- MinecraftChecker pom is standalone (no parent): it pins Java 21, `HealthChecker-API` 1.0-SNAPSHOT and Gson 2.13.2
+  (both `provided`) and JUnit 5.13.4 itself. Package `io.siggi.minecraftchecker`, plugin class `MinecraftCheckPlugin`.
