@@ -147,4 +147,29 @@ class MainTest {
         assertEquals(Main.EXIT_ERROR, Main.hashPassword(null, out, err));
         assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("interactive console"));
     }
+
+    private static Main.PasswordPrompt prompts(String... answers) {
+        java.util.Iterator<String> it = java.util.List.of(answers).iterator();
+        return prompt -> it.hasNext() ? it.next().toCharArray() : null;
+    }
+
+    @Test
+    void hashPasswordPrintsAVerifiableHash() {
+        assertEquals(Main.EXIT_OK, Main.hashPassword(prompts("s3cret!", "s3cret!"), out, err));
+        String hash = outBytes.toString(StandardCharsets.UTF_8).trim();
+        assertTrue(hash.startsWith("pbkdf2-sha256$600000$"), hash);
+        assertTrue(new io.siggi.healthchecker.auth.PasswordHasher().verify("s3cret!".toCharArray(), hash));
+        assertEquals("", errBytes.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void hashPasswordMismatchOrEmptyFails() {
+        assertEquals(Main.EXIT_ERROR, Main.hashPassword(prompts("one", "two"), out, err));
+        assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("don't match"));
+        assertEquals(Main.EXIT_ERROR, Main.hashPassword(prompts("", ""), out, err));
+        assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("empty"));
+        assertEquals(Main.EXIT_ERROR, Main.hashPassword(prompts(), out, err));
+        assertEquals(Main.EXIT_ERROR, Main.hashPassword(prompts("one"), out, err));
+        assertEquals("", outBytes.toString(StandardCharsets.UTF_8));
+    }
 }

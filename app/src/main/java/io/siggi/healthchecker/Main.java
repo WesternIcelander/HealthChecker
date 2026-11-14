@@ -70,7 +70,8 @@ public final class Main {
                 if (args.length != 1) {
                     return usage(err);
                 }
-                return hashPassword(System.console(), out, err);
+                Console console = System.console();
+                return hashPassword(console == null ? null : console::readPassword, out, err);
             case "help":
             case "-h":
             case "--help":
@@ -144,7 +145,12 @@ public final class Main {
         }
     }
 
-    static int hashPassword(Console console, PrintStream out, PrintStream err) {
+    /** Reads a password without echo, like {@link Console#readPassword(String, Object...)}; null at end of input. */
+    interface PasswordPrompt {
+        char[] readPassword(String prompt);
+    }
+
+    static int hashPassword(PasswordPrompt console, PrintStream out, PrintStream err) {
         if (console == null) {
             err.println("hash-password needs an interactive console to read the password without echo.");
             return EXIT_ERROR;
@@ -165,9 +171,6 @@ public final class Main {
             }
             out.println(new PasswordHasher().hash(password));
             return EXIT_OK;
-        } catch (UnsupportedOperationException e) {
-            err.println("hash-password: " + e.getMessage());
-            return EXIT_ERROR;
         } finally {
             Arrays.fill(password, '\0');
             if (repeat != null) {

@@ -1077,7 +1077,7 @@ test list are build, docs or manual steps.
 
 ### M9 — Sessions, built-in login, roles & permissions
 - [x] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
-- [ ] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
+- [x] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
 - [ ] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
 - [ ] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
 
@@ -1467,3 +1467,11 @@ them; see CLAUDE.md.
   `TrustedProxies.isSecure` says HTTPS (keeping only the last session cookie header when a read and a write both set
   it). `run` creates the `SessionManager`; the viewer stays anonymous until users and login are wired up in the next
   M9 steps.
+- Password hashing (app, `auth.PasswordHasher`): JDK `PBKDF2WithHmacSHA256`; new hashes use 600000 iterations, a
+  16-byte `SecureRandom` salt and a 32-byte hash, written as `pbkdf2-sha256$<iter>$<salt>$<hash>` in standard Base64
+  with padding (padding optional when parsing). Parsing is strict: exact lowercase prefix, four `$`-separated parts,
+  iterations 600000–10000000 (weaker hashes are rejected rather than silently accepted; the cap bounds login cost),
+  salt 16–64 bytes, hash exactly 32 bytes. A malformed hash is an `IllegalArgumentException` whose message never echoes
+  the hash (config validation and login use it); `verify` compares with `MessageDigest.isEqual`. `hash-password` reads
+  through a small `PasswordPrompt` interface (backed by `Console.readPassword`) so tests can drive it; it rejects an
+  empty or mismatched password and prints only the hash to stdout.
