@@ -5,7 +5,6 @@ import io.siggi.http.HTTPRequest;
 import io.siggi.http.HTTPResponder;
 import io.siggi.http.HTTPServer;
 import io.siggi.http.HTTPServerBuilder;
-import io.siggi.http.iphelper.IP;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -59,9 +58,7 @@ public final class WebServer implements AutoCloseable {
      * regardless, which is why client address and scheme come from {@link TrustedProxies}.
      */
     private void configureSiggiHttpTrust() {
-        for (IP ip : http.getTrustedIPs()) {
-            http.untrustIP(ip.toString());
-        }
+        http.clearTrustedIPs();
         for (var range : trustedProxies.ranges()) {
             try {
                 http.trustIP(range.toString());
