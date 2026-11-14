@@ -1104,7 +1104,7 @@ test list are build, docs or manual steps.
 ### M13 — OIDC / OAuth 2.0 login
 - [x] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
 - [x] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
-- [ ] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
+- [x] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
 - [ ] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
 - [ ] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
 
@@ -1812,3 +1812,16 @@ them; see CLAUDE.md.
   SimpleJWT 1.1 brings SimpleECDSA and BouncyCastle (`bcprov`), shaded unrelocated into the app jar. Worked around in
   SimpleJWT: `getHeaderValue` throws for a missing key (the header object is read instead), and ES verification
   accepts any even signature length (the length is checked against the curve first).
+- OAuth 2.0 flow (app, `auth.OAuth2Login`): `start` builds the `authorizeUrl` request (its own query kept) with
+  `response_type=code`, `client_id`, `redirect_uri`, `scope` (omitted when there are no scopes), a 32-byte random
+  `state` and, when `pkce` is on, an S256 challenge; the `Pending` (provider, state, verifier or `null`, redirect URI,
+  start time) is single-use and valid 10 minutes, as for OIDC. `finish` checks `state` (constant-time) first, then a
+  provider `error` and the code, and exchanges it at `tokenUrl` with `client_secret_post` (no discovery to say what
+  the provider supports, and GitHub/Discord accept it; public clients send only `client_id`), `Accept:
+  application/json` (GitHub otherwise answers form-encoded) and the verifier when PKCE is on. A token response with
+  an `error` member fails even with HTTP 200 (GitHub does that); `access_token` must be RFC 6750 token characters and
+  `token_type`, when sent, `bearer` (any case). Userinfo is a `GET` with `Authorization: Bearer …`; the identifier is
+  `ProviderConfig.identify` (`idField`), and a response without a usable value fails with
+  `userinfo has no usable "…"`; `nameField` gives an optional display-name hint. Same HTTP rules and `OidcException`
+  (log-only messages) as the OIDC flow, sharing its helpers; requests send `User-Agent: HealthChecker` (GitHub's API
+  requires one).

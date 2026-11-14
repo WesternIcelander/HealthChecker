@@ -106,7 +106,12 @@ public final class OidcLogin {
 
     OidcLogin(Clock clock) {
         this.clock = clock;
-        this.http = HttpClient.newBuilder()
+        this.http = newHttpClient();
+    }
+
+    /** An HTTP client for provider requests: no redirects, {@link #HTTP_TIMEOUT} to connect. */
+    static HttpClient newHttpClient() {
+        return HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(HTTP_TIMEOUT)
@@ -205,7 +210,7 @@ public final class OidcLogin {
             throw new OidcException("token endpoint supports neither client_secret_basic nor client_secret_post");
         }
         request.POST(HttpRequest.BodyPublishers.ofString(form(params)));
-        JsonObject response = fetchJson(request.build(), "token endpoint");
+        JsonObject response = fetchJson(http, request.build(), "token endpoint");
         if (!(response.get("id_token") instanceof JsonPrimitive p && p.isString())) {
             throw new OidcException("token response has no id_token");
         }
@@ -334,7 +339,7 @@ public final class OidcLogin {
     private Metadata discover(ProviderConfig provider) throws OidcException {
         String issuer = provider.issuer();
         String url = (issuer.endsWith("/") ? issuer.substring(0, issuer.length() - 1) : issuer) + WELL_KNOWN;
-        JsonObject doc = fetchJson(get(uri(url, "discovery URL")), "discovery");
+        JsonObject doc = fetchJson(http, get(uri(url, "discovery URL")), "discovery");
         // OIDC Discovery §4.3: the document's issuer must be exactly the configured one.
         if (!issuer.equals(string(doc, "issuer"))) throw new OidcException("discovery issuer mismatch");
         URI authorization = endpoint(doc, "authorization_endpoint");
@@ -361,7 +366,7 @@ public final class OidcLogin {
                     || !now.isBefore(cached.fetched().plus(JWKS_TTL))
                     || (refresh && !now.isBefore(cached.fetched().plus(MIN_JWKS_REFRESH)));
             if (!fetch) return cached.jwks();
-            Jwks fresh = Jwks.parse(fetchJson(get(uri), "JWKS"));
+            Jwks fresh = Jwks.parse(fetchJson(http, get(uri), "JWKS"));
             jwks.put(uri, new CachedJwks(fresh, now));
             return fresh;
         }
@@ -379,7 +384,7 @@ public final class OidcLogin {
         return uri;
     }
 
-    private static URI uri(String value, String what) throws OidcException {
+    static URI uri(String value, String what) throws OidcException {
         try {
             return new URI(value);
         } catch (URISyntaxException e) {
@@ -391,7 +396,8 @@ public final class OidcLogin {
         return HttpRequest.newBuilder(uri).timeout(HTTP_TIMEOUT).header("Accept", "application/json").GET().build();
     }
 
-    private JsonObject fetchJson(HttpRequest request, String what) throws OidcException {
+    /** Sends a request and reads a JSON object response (HTTP 200, at most {@link #MAX_RESPONSE_BYTES}). */
+    static JsonObject fetchJson(HttpClient http, HttpRequest request, String what) throws OidcException {
         HttpResponse<InputStream> response;
         byte[] body;
         try {
@@ -443,11 +449,11 @@ public final class OidcLogin {
         }
     }
 
-    private static boolean constantTimeEquals(String a, String b) {
+    static boolean constantTimeEquals(String a, String b) {
         return MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String form(Map<String, String> params) {
+    static String form(Map<String, String> params) {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, String> e : params.entrySet()) {
             if (!sb.isEmpty()) sb.append('&');
@@ -456,15 +462,15 @@ public final class OidcLogin {
         return sb.toString();
     }
 
-    private static String urlEncode(String s) {
+    static String urlEncode(String s) {
         return URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
-    private static String string(JsonObject object, String key) {
+    static String string(JsonObject object, String key) {
         return object.get(key) instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
     }
 
-    private static String truncate(String s) {
+    static String truncate(String s) {
         String printable = s.replaceAll("[\\p{Cntrl}]", "?");
         return printable.length() <= 100 ? printable : printable.substring(0, 100) + "…";
     }
