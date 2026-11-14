@@ -1047,7 +1047,7 @@ test list are build, docs or manual steps.
 - [x] `HttpCheckPlugin`: shared `HttpClient`, `Redirect.NEVER`, timeout, `maxClass` rule, URL validation, declared targets. **Tests:** against a local SiggiHTTP server, the 200/301/404/503 × `maxClass` 2–5 matrix; refused and timeout always fail; redirect not followed; `maxClass` 1 and 6 rejected; invalid URLs (path, query, scheme) rejected.
 
 ### M4 — Scheduling & live state
-- [ ] `StatusRegistry`: `failureThreshold` state machine, failure streak start time, recent checks (last 100), `StateChange` events, transition logging. **Tests:** thresholds 1 and 3; streak start time; UNKNOWN → UP/DOWN on first result; recent checks capped at 100.
+- [x] `StatusRegistry`: `failureThreshold` state machine, failure streak start time, recent checks (last 100), `StateChange` events, transition logging. **Tests:** thresholds 1 and 3; streak start time; UNKNOWN → UP/DOWN on first result; recent checks capped at 100.
 - [ ] `EndpointRegistry` with runtime add / update-in-place / replace-checker / remove; `CheckScheduler` follows it (per-endpoint schedule, jitter, virtual threads, enforced timeout, skip-if-stuck). **Tests:** plugin that throws; hangs; ignores interrupts (skip-if-stuck); endpoint added/replaced/removed while running (old checker closed, no stray runs).
 
 ### M5 — History store & uptime
@@ -1231,3 +1231,12 @@ them; see CLAUDE.md.
   "timeout after N ms", …) and never include exception texts, which can name the target.
   Messages: `status N` on pass, `status N, expected at most Mxx` on fail. Declared targets: `url`
   as written, and `host` (IPv6 without brackets).
+- `StatusRegistry` (app, package `status`): states `UNKNOWN`, `UP`, `DOWN` (`MAINTENANCE` comes
+  with M12). The first result decides the state regardless of `failureThreshold` (a failure goes
+  UNKNOWN → DOWN at once); UP → DOWN needs `failureThreshold` consecutive failures; DOWN → UP on
+  the first success. A `StateChange` carries the triggering check plus the streak start, first
+  failure message and failure count (for DOWN → UP: those of the outage that ended). Listeners
+  run on the recording thread, in order per endpoint; a throwing listener is logged and skipped.
+  Re-registering an endpoint only updates its threshold (state kept, applied from the next check);
+  removing it drops its status, and late results for it are ignored. Transitions are logged via
+  `System.Logger` (DOWN as WARNING, others INFO).
