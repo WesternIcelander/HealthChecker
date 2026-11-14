@@ -72,6 +72,7 @@ class ExampleConfigTest {
         List<String> notifyWarnings = new ArrayList<>();
         NotificationConfig notifications = NotificationConfig.parse(config.notifications(), notifyErrors, notifyWarnings);
         assertEquals(List.of(), notifyErrors);
+        assertEquals(List.of(), notifyWarnings);
         assertEquals(config.notificationChannels(), notifications.channels().keySet());
     }
 }

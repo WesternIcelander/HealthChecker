@@ -181,7 +181,8 @@ final class Daemon implements AutoCloseable {
         web = new WebServer(config.server());
         sites = SiteResolver.fromConfig(config, web.trustedProxies());
         NotificationConfig notificationConfig = NotificationConfig.parse(config.notifications());
-        notifications = NotificationDispatcher.create(notificationConfig.notifiers(DiscordNotifier.httpClient()),
+        notifications = NotificationDispatcher.create(
+                notificationConfig.notifiers(DiscordNotifier.httpClient(), config.timezone()),
                 notificationConfig.batchWindow());
         ReminderScheduler.Source targets = id -> registry.get(id)
                 .map(e -> new ReminderScheduler.Target(e.definition(), failureMessage(id),

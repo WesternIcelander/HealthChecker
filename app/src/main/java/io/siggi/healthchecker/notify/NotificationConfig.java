@@ -1,5 +1,6 @@
 package io.siggi.healthchecker.notify;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -9,6 +10,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -27,10 +29,11 @@ import java.util.regex.Pattern;
  *   <li>{@code discord}: {@code webhookUrl} (required; https, or http on localhost; no credentials or
  *       fragment), {@code username} (optional) and {@code mention} (optional; role {@code <@&id>}, user
  *       {@code <@id>}, {@code @everyone} or {@code @here}, several separated by spaces).</li>
- *   <li>{@code email}: delivered from M15 on; until then its settings aren't checked, a startup
- *       warning says so, and messages to it fail permanently.</li>
+ *   <li>{@code email} (via SimpleMailer): {@code baseUrl} (required; https, or http on localhost; no
+ *       credentials, query or fragment), {@code apiKey} (required; bearer key), {@code from} (required),
+ *       {@code to} (required, non-empty list) and {@code requireTls} (optional boolean, default false).</li>
  * </ul>
- * Error messages never echo setting values (webhook URLs are secrets).
+ * Error messages never echo setting values (webhook URLs and API keys are secrets).
  */
 public record NotificationConfig(Duration batchWindow, Map<String, Channel> channels) {
     public static final int DEFAULT_BATCH_SECONDS = 30;
@@ -38,6 +41,7 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
 
     private static final Set<String> ROOT_KEYS = Set.of("batchSeconds", "channels");
     private static final Set<String> DISCORD_KEYS = Set.of("type", "webhookUrl", "username", "mention");
+    private static final Set<String> EMAIL_KEYS = Set.of("type", "baseUrl", "apiKey", "from", "to", "requireTls");
     private static final Pattern MENTION = Pattern.compile("<@&[0-9]{1,20}>|<@!?[0-9]{1,20}>|@everyone|@here");
 
     public NotificationConfig {
@@ -67,11 +71,34 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
         }
     }
 
-    /** An email channel; delivery comes with M15. */
-    public record Email() implements Channel {
+    /**
+     * An email channel, delivered through a SimpleMailer instance.
+     *
+     * @param baseUrl    SimpleMailer's base URL; messages go to {@code {baseUrl}/v1/messages}
+     * @param apiKey     the bearer key (a secret: never logged or shown)
+     * @param from       the {@code From} address
+     * @param to         the recipients; never empty
+     * @param requireTls deliver only over STARTTLS
+     */
+    public record Email(URI baseUrl, String apiKey, String from, List<String> to, boolean requireTls)
+            implements Channel {
+        public Email {
+            Objects.requireNonNull(baseUrl, "baseUrl");
+            Objects.requireNonNull(apiKey, "apiKey");
+            Objects.requireNonNull(from, "from");
+            to = List.copyOf(to);
+            if (to.isEmpty()) throw new IllegalArgumentException("no recipients");
+        }
+
         @Override
         public String type() {
             return "email";
+        }
+
+        /** Without the API key. */
+        @Override
+        public String toString() {
+            return "Email[baseUrl=" + baseUrl + ", from=" + from + ", to=" + to + ", requireTls=" + requireTls + "]";
         }
     }
 
@@ -122,14 +149,16 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
         return new NotificationConfig(Duration.ofSeconds(batchSeconds), channels);
     }
 
-    /** One notifier per channel, in configuration order. */
-    public Map<String, Notifier> notifiers(HttpClient client) {
+    /**
+     * One notifier per channel, in configuration order.
+     *
+     * @param zone the timezone times are written in where the receiver can't localise them (email)
+     */
+    public Map<String, Notifier> notifiers(HttpClient client, ZoneId zone) {
         Map<String, Notifier> out = new LinkedHashMap<>();
         channels.forEach((name, channel) -> out.put(name, switch (channel) {
             case Discord d -> new DiscordNotifier(d, client);
-            case Email ignored -> batch -> {
-                throw NotifierException.permanent("email delivery isn't available yet");
-            };
+            case Email e -> new EmailNotifier(e, client, zone);
         }));
         return out;
     }
@@ -157,8 +186,7 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
                 return discord(o, path, errors);
             }
             case "email" -> {
-                warnings.add(path + ": email channels aren't supported yet; messages to this channel fail");
-                return new Email();
+                return email(o, path, errors);
             }
             default -> {
                 errors.add(path + ": unknown type \"" + type + "\" (available: discord, email)");
@@ -172,7 +200,7 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
         for (String key : o.keySet()) {
             if (!DISCORD_KEYS.contains(key)) errors.add(path + ": unknown key \"" + key + "\"");
         }
-        URI url = webhookUrl(o.get("webhookUrl"), path, errors);
+        URI url = httpUrl(o.get("webhookUrl"), "webhookUrl", true, path, errors);
         String username = null;
         JsonElement u = o.get("username");
         if (u != null && !u.isJsonNull()) {
@@ -199,6 +227,56 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
         return errors.size() == before ? new Discord(url, username, mention) : null;
     }
 
+    private static Email email(JsonObject o, String path, List<String> errors) {
+        int before = errors.size();
+        for (String key : o.keySet()) {
+            if (!EMAIL_KEYS.contains(key)) errors.add(path + ": unknown key \"" + key + "\"");
+        }
+        URI baseUrl = httpUrl(o.get("baseUrl"), "baseUrl", false, path, errors);
+        String apiKey = string(o, "apiKey");
+        if (apiKey == null || apiKey.isEmpty()) {
+            errors.add(path + ": apiKey is required");
+        } else if (apiKey.chars().anyMatch(c -> c <= ' ' || c == 0x7F)) {
+            errors.add(path + ": apiKey must not contain spaces or control characters");
+        }
+        String from = string(o, "from");
+        if (from == null || from.isBlank()) {
+            errors.add(path + ": from is required");
+        } else if (!addressValid(from)) {
+            errors.add(path + ": from must be an email address without control characters");
+        }
+        List<String> to = new ArrayList<>();
+        JsonElement t = o.get("to");
+        if (!(t instanceof JsonArray array) || array.isEmpty()) {
+            errors.add(path + ": to must be a non-empty list of email addresses");
+        } else {
+            for (JsonElement e : array) {
+                String address = e instanceof JsonPrimitive p && p.isString() ? p.getAsString().strip() : null;
+                if (address == null || !addressValid(address)) {
+                    errors.add(path + ": to must be a non-empty list of email addresses");
+                    break;
+                }
+                to.add(address);
+            }
+        }
+        boolean requireTls = false;
+        JsonElement tls = o.get("requireTls");
+        if (tls != null && !tls.isJsonNull()) {
+            if (tls instanceof JsonPrimitive p && p.isBoolean()) {
+                requireTls = p.getAsBoolean();
+            } else {
+                errors.add(path + ": requireTls must be true or false");
+            }
+        }
+        return errors.size() == before ? new Email(baseUrl, apiKey, from.strip(), to, requireTls) : null;
+    }
+
+    /** Loosely an address ({@code a@b}, optionally with a display name); SimpleMailer checks the rest. */
+    private static boolean addressValid(String address) {
+        return address.contains("@") && !address.isBlank() && address.length() <= 320
+                && address.chars().noneMatch(Character::isISOControl);
+    }
+
     static boolean mentionValid(String mention) {
         for (String token : mention.strip().split("\\s+")) {
             if (!MENTION.matcher(token).matches()) return false;
@@ -206,9 +284,10 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
         return true;
     }
 
-    private static URI webhookUrl(JsonElement element, String path, List<String> errors) {
+    /** An https URL (http only for loopback) without credentials or fragment; a query only if allowed. */
+    private static URI httpUrl(JsonElement element, String key, boolean allowQuery, String path, List<String> errors) {
         if (!(element instanceof JsonPrimitive p && p.isString()) || p.getAsString().isEmpty()) {
-            errors.add(path + ": webhookUrl is required");
+            errors.add(path + ": " + key + " is required");
             return null;
         }
         try {
@@ -217,20 +296,24 @@ public record NotificationConfig(Duration batchWindow, Map<String, Channel> chan
             String host = uri.getHost();
             if (!uri.isAbsolute() || host == null || host.isEmpty()
                     || !(scheme.equals("https") || scheme.equals("http"))) {
-                errors.add(path + ": webhookUrl must be an absolute https URL");
+                errors.add(path + ": " + key + " must be an absolute https URL");
                 return null;
             }
             if (scheme.equals("http") && !AuthProviders.isLoopback(host)) {
-                errors.add(path + ": webhookUrl must use https (http is only allowed for localhost)");
+                errors.add(path + ": " + key + " must use https (http is only allowed for localhost)");
                 return null;
             }
             if (uri.getRawUserInfo() != null || uri.getRawFragment() != null) {
-                errors.add(path + ": webhookUrl must not contain credentials or a fragment");
+                errors.add(path + ": " + key + " must not contain credentials or a fragment");
+                return null;
+            }
+            if (!allowQuery && uri.getRawQuery() != null) {
+                errors.add(path + ": " + key + " must not contain a query");
                 return null;
             }
             return uri;
         } catch (URISyntaxException e) {
-            errors.add(path + ": webhookUrl is not a valid URL");
+            errors.add(path + ": " + key + " is not a valid URL");
             return null;
         }
     }

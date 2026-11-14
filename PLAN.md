@@ -1115,7 +1115,7 @@ test list are build, docs or manual steps.
 - [x] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
 
 ### M15 — Email via SimpleMailer
-- [ ] `EmailNotifier`: `POST /v1/messages`, stable UUID per notification across retries, response-code handling; text + HTML bodies, subject summary, event permalink. **Tests:** fake SimpleMailer API: 202; retry after 503 reuses the same id; 401 and 400 permanent; payload shape; HTML escaping of endpoint names and messages.
+- [x] `EmailNotifier`: `POST /v1/messages`, stable UUID per notification across retries, response-code handling; text + HTML bodies, subject summary, event permalink. **Tests:** fake SimpleMailer API: 202; retry after 503 reuses the same id; 401 and 400 permanent; payload shape; HTML escaping of endpoint names and messages.
 
 ### M16 — Packaging & ops
 - [ ] Shutdown hook: final coverage heartbeat, stop scheduler, flush pending notifications (bounded), close checkers, kill HTTP server. **Tests:** shutdown closes checkers and writes final coverage within the time limit.
@@ -1885,7 +1885,7 @@ them; see CLAUDE.md.
   needs `type` `discord` or `email`. `discord` keys: `webhookUrl` (required; https, or http on localhost; no credentials
   or fragment; a query such as `thread_id` is kept), `username` (1–80 characters; not containing "discord"/"clyde",
   which Discord rejects) and `mention` (role `<@&id>`, user `<@id>`/`<@!id>`, `@everyone`, `@here`, several separated by
-  spaces). `email` channels are accepted with a startup warning and fail permanently until M15. `run` reports these with
+  spaces). `email` channels (until M15 accepted with a warning and failing) are described below. `run` reports these with
   the other configuration errors; error messages never echo the webhook URL. Embeds: title "{name} is down" (red) /
   "is still down" (orange) / "recovered" (green), "Test notification" (grey), announcements blue; the description has
   "Down since" / "Down for 1h, since" / "Back up after 2h 14m" with Discord `<t:…:f>` timestamps (shown in each reader's
@@ -1930,3 +1930,23 @@ them; see CLAUDE.md.
   when created and cancelled; its occurrences get upcoming/started/ended; skipping or editing a single occurrence
   isn't announced. "Upcoming" is left out when the window was created after that moment; a window created and
   cancelled between two ticks isn't announced at all.
+- `EmailNotifier` (app, `notify.EmailNotifier`): `email` channel keys are `baseUrl` (required; https, or http on
+  localhost; no credentials, query or fragment; a path prefix is kept, a trailing slash ignored), `apiKey` (required,
+  no spaces or control characters; never echoed or logged, left out of the record's `toString`), `from` (required),
+  `to` (non-empty list) and `requireTls` (boolean, default false); unknown keys are errors. Addresses are only checked
+  loosely (contain `@`, no control characters, at most 320 characters); SimpleMailer validates the rest. The request
+  is `POST {baseUrl}/v1/messages` with `Authorization: Bearer`, `{id, from, to, subject, text, html, requireTls}`,
+  where `id` is the `NotificationBatch` id (stable across the dispatcher's retries) and the body depends only on the
+  batch, so a repeat is identical and SimpleMailer answers `200` rather than `409`. Subject: one notification gives
+  "[HealthChecker] Website down" / "Admin still down (1h)" / "Shop recovered after 2h 14m" / "Test notification" /
+  the announcement headline; several give counts in kind order ("2 down, 1 still down, 1 recovered, 1 test
+  notification, 2 announcements"); control characters become spaces and it is cut at 200 characters. Bodies: per
+  notification a heading like the Discord title, "Down since" / "Down for 1h, since" / "Back up after 2h 14m (down
+  since …)" with times as "Thu 1 Jan 2026 12:00 (Zone/Id)" in the configured timezone (email can't localise them),
+  "Latest failure: …" (cut at 2000 characters), the free text, and the link ("Details: …" in text, an `<a>` in HTML,
+  only for absolute http(s) links); HTML is a simple inline-styled page with a coloured left border per kind
+  (red/orange/green/blue/grey) and everything escaped with `Html.escape`. Responses: `2xx` success; `5xx`, `408`,
+  `429` (its `Retry-After` seconds honoured), timeouts and connection failures retried; `409` logged at `ERROR` as a
+  bug and permanent; `400`, `401` and every other status permanent, with SimpleMailer's `error`/`message`/`errors`
+  in the channel error. 30 s request timeout, the same no-redirect HTTP/1.1 client as Discord.
+  `NotificationConfig.notifiers` takes the timezone (`Daemon` passes `config.timezone()`).

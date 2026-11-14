@@ -34,7 +34,9 @@ class NotificationConfigTest {
                     "discord": { "type": "discord", "webhookUrl": "https://discord.com/api/webhooks/1/abc?thread_id=5",
                                  "username": "Status", "mention": "  <@&123>   @here " },
                     "plain": { "type": "discord", "webhookUrl": "http://127.0.0.1:9/hook" },
-                    "mail": { "type": "email", "to": ["ops@example.com"] } } }
+                    "mail": { "type": "email", "baseUrl": "https://mail-api.example.com/", "apiKey": "k3y",
+                              "from": "HealthChecker <health@example.com>", "to": [" ops@example.com "],
+                              "requireTls": true } } }
                 """), errors, warnings);
         assertEquals(List.of(), errors);
         assertEquals(Duration.ofSeconds(10), c.batchWindow());
@@ -44,8 +46,46 @@ class NotificationConfigTest {
         assertEquals(new NotificationConfig.Discord(URI.create("http://127.0.0.1:9/hook"), null, null),
                 c.channels().get("plain"));
         assertEquals(Map.of("discord", "discord", "plain", "discord", "mail", "email"), c.types());
-        assertEquals(1, warnings.size());
-        assertTrue(warnings.getFirst().contains("\"mail\""));
+        assertEquals(new NotificationConfig.Email(URI.create("https://mail-api.example.com/"), "k3y",
+                "HealthChecker <health@example.com>", List.of("ops@example.com"), true), c.channels().get("mail"));
+        assertFalse(c.channels().get("mail").toString().contains("k3y"));
+        assertEquals(List.of(), warnings);
+    }
+
+    @Test
+    void rejectsInvalidEmailSettings() {
+        String ok = "\"type\":\"email\",\"baseUrl\":\"https://m.example.com\",\"apiKey\":\"secret-key\","
+                + "\"from\":\"a@example.com\"";
+        assertEquals(List.of(), errors("{" + ok + ",\"to\":[\"b@example.com\"]}"));
+        assertEquals(List.of(), errors("{" + ok.replace("https://m.example.com", "http://127.0.0.1:8080")
+                + ",\"to\":[\"b@example.com\"],\"requireTls\":false}"));
+        assertEquals(List.of("notifications.channels \"d\": to must be a non-empty list of email addresses"),
+                errors("{" + ok + "}"));
+        assertEquals(List.of("notifications.channels \"d\": to must be a non-empty list of email addresses"),
+                errors("{" + ok + ",\"to\":[]}"));
+        assertEquals(List.of("notifications.channels \"d\": to must be a non-empty list of email addresses"),
+                errors("{" + ok + ",\"to\":\"b@example.com\"}"));
+        assertEquals(List.of("notifications.channels \"d\": to must be a non-empty list of email addresses"),
+                errors("{" + ok + ",\"to\":[\"nobody\"]}"));
+        assertEquals(List.of("notifications.channels \"d\": baseUrl is required",
+                        "notifications.channels \"d\": apiKey is required",
+                        "notifications.channels \"d\": from is required",
+                        "notifications.channels \"d\": to must be a non-empty list of email addresses"),
+                errors("{\"type\":\"email\"}"));
+        assertEquals(List.of("notifications.channels \"d\": baseUrl must use https (http is only allowed for localhost)"),
+                errors("{" + ok.replace("https://", "http://") + ",\"to\":[\"b@example.com\"]}"));
+        assertEquals(List.of("notifications.channels \"d\": baseUrl must not contain a query"),
+                errors("{" + ok.replace("example.com\"", "example.com/?x=1\"") + ",\"to\":[\"b@example.com\"]}"));
+        assertEquals(List.of("notifications.channels \"d\": from must be an email address without control characters"),
+                errors("{" + ok.replace("a@example.com", "a@example.com\\r\\nBcc: x@y") + ",\"to\":[\"b@example.com\"]}"));
+        assertEquals(List.of("notifications.channels \"d\": requireTls must be true or false"),
+                errors("{" + ok + ",\"to\":[\"b@example.com\"],\"requireTls\":\"yes\"}"));
+        assertEquals(List.of("notifications.channels \"d\": unknown key \"cc\""),
+                errors("{" + ok + ",\"to\":[\"b@example.com\"],\"cc\":[]}"));
+        List<String> spaced = errors("{" + ok.replace("secret-key", "secret key") + ",\"to\":[\"b@example.com\"]}");
+        assertEquals(List.of("notifications.channels \"d\": apiKey must not contain spaces or control characters"),
+                spaced);
+        assertFalse(spaced.getFirst().contains("secret"));
     }
 
     @Test
