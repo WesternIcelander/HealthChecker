@@ -130,7 +130,7 @@ public final class ServicePage {
         this.dashboard = dashboard;
     }
 
-    /** Adds an "Edit" link to the service page for users who may use {@code endpointEditor}. */
+    /** Adds "Edit" (and, for dashboard endpoints, "Delete") links to the service page for users who may use {@code endpointEditor}. */
     public void endpointEditor(EndpointEditor endpointEditor) {
         this.endpointEditor = endpointEditor;
     }
@@ -494,7 +494,13 @@ public final class ServicePage {
         if (manage != null && manage.canManage(request)) {
             html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
                     .append(Html.escape(site.link(EndpointEditor.PATH + "/" + service.endpoint().id())))
-                    .append("\">Edit</a></p>\n");
+                    .append("\">Edit</a>");
+            if (manage.canDelete(request, service.endpoint().id())) {
+                html.append(" <a class=\"button button-danger\" href=\"")
+                        .append(Html.escape(site.link(EndpointEditor.PATH + "/" + service.endpoint().id() + "/delete")))
+                        .append("\">Delete</a>");
+            }
+            html.append("</p>\n");
         }
         // The list view is the default: any ?view= other than "calendar" shows it. A valid
         // ?day= up to today opens the calendar page containing that day, with its details open.

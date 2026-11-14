@@ -406,4 +406,40 @@ class HistoryStoreTest {
         public void log(Level level, Supplier<String> msgSupplier) {
         }
     }
+
+    @Test
+    void deleteHistoryRemovesEverythingOfOneEndpoint() throws IOException {
+        status.register("a", 1);
+        status.register("b", 1);
+        HistoryStore store = open();
+        List<String> deleted = new ArrayList<>();
+        store.addDeleteListener(deleted::add);
+        check(store, "a", 0, false);
+        check(store, "b", 0, false);
+        store.rememberTargets("a", List.of("a.example.invalid"));
+        store.stopMonitoring("a");
+        assertTrue(store.hasHistory("a"));
+
+        assertTrue(store.deleteHistory("a"));
+        assertFalse(store.hasHistory("a"));
+        assertTrue(store.events("a").isEmpty());
+        assertTrue(store.coverage("a").isEmpty());
+        assertTrue(store.knownTargets("a").isEmpty());
+        assertEquals(List.of("a"), deleted);
+        assertFalse(Files.exists(dataDir.resolve("endpoints/a")));
+        assertFalse(store.deleteHistory("a"), "nothing left to delete");
+        store.heartbeat();
+        assertFalse(Files.exists(dataDir.resolve("endpoints/a")), "the heartbeat doesn't bring it back");
+        assertEquals(1, store.events("b").size());
+        store.close();
+
+        // A leftover of an interrupted deletion is removed at load.
+        Path leftover = dataDir.resolve("endpoints/.deleted-c-123/events");
+        Files.createDirectories(leftover);
+        Files.writeString(leftover.resolve("2026.jsonl"), "garbage");
+        HistoryStore reopened = open();
+        assertFalse(Files.exists(dataDir.resolve("endpoints/.deleted-c-123")));
+        assertEquals(Set.of("b"), reopened.endpointIds());
+        reopened.close();
+    }
 }

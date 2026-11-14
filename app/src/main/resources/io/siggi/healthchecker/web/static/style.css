@@ -671,6 +671,8 @@ h2.day-title { font-size: 1.4rem; }
 /* ---- endpoint editor ---- */
 
 .button-primary { background: var(--link); border-color: var(--link); color: #fff; }
+.button-danger { border-color: var(--down); color: var(--down); }
+.ee-delete { margin-left: auto; }
 .ee-title { margin: 8px 0 8px; font-size: 1.2rem; }
 .ee-notice { padding: 6px 10px; border-radius: 6px; background: var(--surface); }
 .badge-config { color: var(--muted); }

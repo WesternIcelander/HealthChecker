@@ -277,4 +277,39 @@ class LiveEndpointChangesTest {
         assertTrue(daemon.history().knownTargets(ID).containsAll(
                 Set.of("down-a-secret.example.invalid", "down-b-secret.example.invalid")));
     }
+
+    @Test
+    void deleteStopsChecksKeepsHistoryAndBlocksIdReuse() throws Exception {
+        start();
+        save(entry("Service", "down.example.invalid", 1));
+        awaitDown();
+        Checker checker = endpoint().checker();
+        HistoryEvent open = daemon.history().openEvent(ID).orElseThrow();
+
+        EndpointStore store = daemon.endpoints();
+        store.removeEndpoint(store.version(), ID);
+
+        assertTrue(daemon.registry().get(ID).isEmpty());
+        assertTrue(status().isEmpty());
+        assertFalse(daemon.history().monitored(ID), "coverage ended");
+        HistoryEvent closed = daemon.history().event(ID, open.id()).orElseThrow();
+        assertTrue(closed.endedUnobserved());
+        await("checker closed", Duration.ofSeconds(3), () -> fake.closed.contains(checker));
+        int events = daemon.history().events(ID).size();
+        Thread.sleep(1500);
+        assertEquals(events, daemon.history().events(ID).size(), "no more checks recorded");
+        assertFalse(daemon.history().monitored(ID));
+
+        // History kept, so the id is reserved.
+        EndpointStore.InvalidEntryException e = org.junit.jupiter.api.Assertions.assertThrows(
+                EndpointStore.InvalidEntryException.class, () -> save(entry("Other", "up.example.invalid", 1)));
+        assertTrue(e.getMessage().contains("still has history"), e.getMessage());
+
+        // Deleting the history frees it; the new endpoint starts with a clean history.
+        assertTrue(daemon.history().deleteHistory(ID));
+        save(entry("Other", "up.example.invalid", 1));
+        await("UP", Duration.ofSeconds(5), () -> status().map(s -> s.state() == State.UP).orElse(false));
+        assertTrue(daemon.history().events(ID).isEmpty());
+        assertEquals(Set.of("up.example.invalid"), daemon.history().knownTargets(ID));
+    }
 }

@@ -19,6 +19,7 @@ import io.siggi.healthchecker.config.EndpointDefaults;
 import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.config.Visibility;
+import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.plugin.PluginManager;
 import io.siggi.healthchecker.schedule.EndpointFactory;
 import io.siggi.healthchecker.schedule.OneOffCheck;
@@ -64,6 +65,10 @@ import java.util.stream.Collectors;
  * entered. Saving ({@code action=save}) goes through {@link EndpointStore#putEndpoint}, i.e. the same
  * validation as config loading including the plugin's {@code create()}; errors are shown next to their
  * fields (by setting key) and nothing is saved until everything is valid.
+ * <p>{@code GET /admin/endpoints/{id}/delete} asks for confirmation (type the id) and
+ * {@code POST} deletes the dashboard endpoint: its checks stop and coverage ends. Its history is kept
+ * unless "also delete history" is ticked, which needs {@code history.delete}. While the history is
+ * kept, the id can't be used for a new endpoint ({@link EndpointStore#reserveIdsWithHistory}).
  * <p>"Test now" ({@code action=test}) validates the form the same way, then runs one check with its
  * values through a {@link OneOffCheck} and shows the result above the form, without saving anything.
  * It's rate-limited per user ({@value #TEST_LIMIT} tests per {@link #TEST_WINDOW}); over the limit
@@ -88,20 +93,25 @@ public final class EndpointEditor {
     private final Config config;
     private final ActionRateLimiter testLimiter;
     private final OneOffCheck oneOffCheck;
+    private final HistoryStore history;
 
     /** "Test now" runs per user within {@link #TEST_WINDOW}. */
     public static final int TEST_LIMIT = 10;
     public static final Duration TEST_WINDOW = Duration.ofMinutes(1);
 
     public EndpointEditor(SiteResolver sites, Permissions permissions, SessionManager sessions, EndpointStore store,
-                          PluginManager plugins, Config config) {
-        this(sites, permissions, sessions, store, plugins, config,
+                          PluginManager plugins, Config config, HistoryStore history) {
+        this(sites, permissions, sessions, store, plugins, config, history,
                 new ActionRateLimiter(TEST_LIMIT, TEST_WINDOW, Clock.systemUTC()));
     }
 
-    /** @param testLimiter limits "Test now" per user id */
+    /**
+     * @param history     for deleting an endpoint's history
+     * @param testLimiter limits "Test now" per user id
+     */
     public EndpointEditor(SiteResolver sites, Permissions permissions, SessionManager sessions, EndpointStore store,
-                          PluginManager plugins, Config config, ActionRateLimiter testLimiter) {
+                          PluginManager plugins, Config config, HistoryStore history, ActionRateLimiter testLimiter) {
+        this.history = history;
         this.testLimiter = testLimiter;
         this.oneOffCheck = new OneOffCheck(new EndpointFactory(plugins));
         this.sites = sites;
@@ -123,6 +133,11 @@ public final class EndpointEditor {
                 .map(u -> u.has(Permission.ENDPOINTS_MANAGE) && u.has(Permission.VIEW_PRIVATE)).orElse(false);
     }
 
+    /** Whether {@code id} is a dashboard endpoint the request's user may delete (for the "Delete" link). */
+    public boolean canDelete(HTTPRequest request, String id) {
+        return canManage(request) && store.endpoint(id).map(e -> e.source() == EndpointStore.Source.DASHBOARD).orElse(false);
+    }
+
     private boolean requireAccess(HTTPRequest request, Site site) throws Exception {
         if (!permissions.require(request, site, Permission.ENDPOINTS_MANAGE)) return false;
         if (permissions.has(request, Permission.VIEW_PRIVATE)) return true;
@@ -137,10 +152,16 @@ public final class EndpointEditor {
     private void handle(HTTPRequest request) throws Exception {
         String path = request.path();
         String rest;
+        boolean delete = false;
         if (path.equals(PATH)) {
             rest = null;
         } else if (path.startsWith(PATH + "/")) {
             rest = path.substring(PATH.length() + 1);
+            if (rest.endsWith("/delete")) {
+                rest = rest.substring(0, rest.length() - "/delete".length());
+                delete = true;
+                if (!ID.matcher(rest).matches()) return;
+            }
             if (rest.isEmpty() || rest.contains("/")) return; // nothing written → 404
             if (!rest.equals("new") && !ID.matcher(rest).matches()) return;
         } else {
@@ -172,6 +193,21 @@ public final class EndpointEditor {
         }
         Optional<EndpointStore.StoredEndpoint> stored = store.endpoint(rest);
         if (stored.isEmpty()) return; // nothing written → 404
+        if (delete) {
+            if (stored.get().source() == EndpointStore.Source.CONFIG) {
+                PageSupport.write(request, "403 Forbidden", "text/plain; charset=utf-8",
+                        "This service is defined in config.json and can't be deleted in the dashboard. Remove it there "
+                                + "and restart.\n");
+                return;
+            }
+            if (post) {
+                if (!sessions.requireCsrf(request)) return;
+                submitDelete(request, site, stored.get());
+            } else {
+                deletePage(request, site, "200 OK", stored.get(), Integer.toString(store.version()), null);
+            }
+            return;
+        }
         if (stored.get().source() == EndpointStore.Source.CONFIG) {
             if (post) {
                 PageSupport.write(request, "403 Forbidden", "text/plain; charset=utf-8",
@@ -244,6 +280,64 @@ public final class EndpointEditor {
         }
         request.response.setHeader("303 See Other");
         request.response.setHeader("Location", site.link(PATH + "/" + id + "?saved=1"));
+        request.response.setHeader("Cache-Control", "no-store");
+        request.response.setHeader("Content-Length", "0");
+        request.response.write(new byte[0]);
+    }
+
+    /**
+     * Deletes a dashboard endpoint after the id was typed to confirm it, and its history too when
+     * {@code deleteHistory} is ticked (needs {@code history.delete}, else {@code 403} and nothing changes).
+     */
+    private void submitDelete(HTTPRequest request, Site site, EndpointStore.StoredEndpoint existing) throws Exception {
+        Map<String, String> post = request.post();
+        if (post == null) post = Map.of();
+        String id = existing.id();
+        String version = post.getOrDefault("version", "");
+        boolean deleteHistory = "on".equals(post.get("deleteHistory"));
+        if (deleteHistory && !permissions.has(request, Permission.HISTORY_DELETE)) {
+            PageSupport.write(request, "403 Forbidden", "text/plain; charset=utf-8",
+                    "Deleting a service's history needs the history.delete permission. Nothing was deleted.\n");
+            return;
+        }
+        if (!id.equals(post.getOrDefault("confirm", "").strip())) {
+            deletePage(request, site, "400 Bad Request", existing, version,
+                    "Type the id \"" + id + "\" to confirm. Nothing was deleted.");
+            return;
+        }
+        try {
+            store.removeEndpoint(parseVersion(version), id);
+        } catch (EndpointStore.VersionConflictException e) {
+            deletePage(request, site, "409 Conflict", existing, Integer.toString(e.currentVersion()),
+                    "Someone else changed the services in the meantime (now version " + e.currentVersion()
+                            + "). Check that you still want to delete this service, and confirm again.");
+            return;
+        } catch (EndpointStore.InvalidEntryException e) {
+            // Removed (or turned into a config endpoint) in the meantime.
+            PageSupport.write(request, "409 Conflict", "text/plain; charset=utf-8", String.join("\n", e.errors()) + "\n");
+            return;
+        } catch (IOException e) {
+            System.getLogger(EndpointEditor.class.getName()).log(System.Logger.Level.ERROR,
+                    "Deleting endpoint " + id + " failed", e);
+            PageSupport.write(request, "500 Internal Server Error", "text/plain; charset=utf-8",
+                    "Deleting failed. Try again later.\n");
+            return;
+        }
+        if (deleteHistory) {
+            try {
+                history.deleteHistory(id);
+            } catch (IOException | RuntimeException e) {
+                System.getLogger(EndpointEditor.class.getName()).log(System.Logger.Level.ERROR,
+                        "Deleting the history of " + id + " failed", e);
+                PageSupport.write(request, "500 Internal Server Error", "text/plain; charset=utf-8",
+                        "The service was deleted, but its history couldn't be deleted, so its id stays reserved. "
+                                + "See the server log.\n");
+                return;
+            }
+        }
+        request.response.setHeader("303 See Other");
+        request.response.setHeader("Location", site.link(PATH + "?deleted=" + id
+                + (history.hasHistory(id) ? "" : "&history=deleted")));
         request.response.setHeader("Cache-Control", "no-store");
         request.response.setHeader("Content-Length", "0");
         request.response.write(new byte[0]);
@@ -604,7 +698,15 @@ public final class EndpointEditor {
         StringBuilder html = new StringBuilder(8192);
         PageSupport.head(html, site, "Services · " + site.title(), false, viewer);
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n")
-                .append("<h2>Services</h2>\n<p class=\"page-actions\"><a class=\"button\" href=\"")
+                .append("<h2>Services</h2>\n");
+        String deleted = request.get().get("deleted");
+        if (deleted != null && ID.matcher(deleted).matches()) {
+            html.append("<p class=\"ee-notice\" role=\"status\">Deleted <code>").append(Html.escape(deleted))
+                    .append("</code>. ").append("deleted".equals(request.get().get("history"))
+                            ? "Its history was deleted too."
+                            : "Its history was kept, so the id can't be used for a new service.").append("</p>\n");
+        }
+        html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
                 .append(Html.escape(site.link(PATH + "/new"))).append("\">Add service</a></p>\n")
                 .append("<ul class=\"ee-list\">\n");
         for (EndpointStore.StoredEndpoint e : store.endpoints()) {
@@ -685,6 +787,51 @@ public final class EndpointEditor {
                 .append(Html.escape(value)).append("</dd></div>");
     }
 
+    /** The delete confirmation: type the id; "also delete history" for users with {@code history.delete}. */
+    private void deletePage(HTTPRequest request, Site site, String status, EndpointStore.StoredEndpoint existing,
+                            String version, String error) throws Exception {
+        Viewer viewer = permissions.viewer(request);
+        String id = existing.id();
+        String name = existing.enabled() ? existing.definition().name() : nameOf(existing);
+        boolean mayDeleteHistory = permissions.has(request, Permission.HISTORY_DELETE);
+        boolean hasHistory = history.hasHistory(id);
+        StringBuilder html = new StringBuilder(4096);
+        PageSupport.head(html, site, "Delete " + name + " · " + site.title(), false, viewer);
+        crumbs(html, site);
+        html.append("<h2 class=\"ee-title\">Delete ").append(Html.escape(name)).append("</h2>\n");
+        if (error != null) {
+            html.append("<p class=\"form-error\" role=\"alert\">").append(Html.escape(error)).append("</p>\n");
+        }
+        html.append("<p>The service <code>").append(Html.escape(id)).append("</code> stops being checked. ")
+                .append(hasHistory ? "Its history (outages, notes and uptime) is kept unless you delete it below. "
+                        + "While it's kept, the id can't be used for a new service." : "It has no history yet.")
+                .append("</p>\n<form class=\"endpoint-form ee-delete-form\" method=\"post\" action=\"")
+                .append(Html.escape(site.link(PATH + "/" + id + "/delete"))).append("\">")
+                .append("<input type=\"hidden\" name=\"").append(SessionManager.CSRF_FIELD).append("\" value=\"")
+                .append(Html.escape(viewer.csrfToken() == null ? "" : viewer.csrfToken())).append("\">")
+                .append("<input type=\"hidden\" name=\"version\" value=\"").append(Html.escape(version)).append("\">\n")
+                .append("<div class=\"field\" data-field=\"confirm\"><label class=\"field-label\" for=\"f-confirm\">")
+                .append("Type the id to confirm</label><input type=\"text\" id=\"f-confirm\" name=\"confirm\" required ")
+                .append("autocomplete=\"off\" aria-describedby=\"h-f-confirm\"><p class=\"field-help muted\" id=\"h-f-confirm\">")
+                .append("Type <code>").append(Html.escape(id)).append("</code>.</p></div>\n");
+        if (hasHistory) {
+            if (mayDeleteHistory) {
+                html.append("<div class=\"field\" data-field=\"deleteHistory\"><label class=\"ee-check\" for=\"f-deleteHistory\">")
+                        .append("<input type=\"checkbox\" id=\"f-deleteHistory\" name=\"deleteHistory\" value=\"on\"> ")
+                        .append("Also delete its history (can't be undone)</label></div>\n");
+            } else {
+                html.append("<p class=\"muted\">Its history will be kept. Deleting history needs the "
+                        + "<code>history.delete</code> permission.</p>\n");
+            }
+        }
+        html.append("<div class=\"ee-actions\"><button type=\"submit\" class=\"button button-danger\">Delete service</button>")
+                .append("<a class=\"button\" href=\"").append(Html.escape(site.link(PATH + "/" + id)))
+                .append("\">Cancel</a></div>\n</form>\n");
+        PageSupport.foot(html, site);
+        secureHeaders(request);
+        PageSupport.write(request, status, "text/html; charset=utf-8", html.toString());
+    }
+
     private static void crumbs(StringBuilder html, Site site) {
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a> · ")
                 .append("<a href=\"").append(Html.escape(site.link(PATH))).append("\">Manage services</a></p>\n");
@@ -737,8 +884,12 @@ public final class EndpointEditor {
                 .append(typeChosen ? "" : " hidden").append(">Save</button>")
                 .append("<button type=\"submit\" name=\"action\" value=\"test\" class=\"button ee-test\"")
                 .append(typeChosen ? "" : " hidden").append(">Test now</button>")
-                .append("<a class=\"button\" href=\"").append(Html.escape(site.link(PATH))).append("\">Cancel</a></div>\n")
-                .append("</form>\n");
+                .append("<a class=\"button\" href=\"").append(Html.escape(site.link(PATH))).append("\">Cancel</a>");
+        if (!create) {
+            html.append("<a class=\"button button-danger ee-delete\" href=\"")
+                    .append(Html.escape(site.link(PATH + "/" + existing.id() + "/delete"))).append("\">Delete…</a>");
+        }
+        html.append("</div>\n</form>\n");
         // With JS, changing the type swaps in that type's fields from these templates.
         for (TypeInfo type : types()) {
             html.append("<template class=\"ee-settings-template\" data-type=\"").append(Html.escape(type.type())).append("\">");

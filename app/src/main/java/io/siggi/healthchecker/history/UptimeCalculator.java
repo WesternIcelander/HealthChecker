@@ -28,7 +28,7 @@ import java.util.function.Consumer;
  *
  * <p>Day summaries are cached per endpoint once the day is over (with a few minutes'
  * margin, since a check that started before midnight is recorded after it). The cache of
- * an endpoint is dropped whenever one of its events is opened or closed, or on
+ * an endpoint is dropped whenever one of its events is opened or closed, its history is deleted, or on
  * {@link #invalidate(String)}.
  *
  * <p>Thread-safe.
@@ -45,6 +45,7 @@ public final class UptimeCalculator implements AutoCloseable {
     private final Clock clock;
     private final Map<String, EndpointCache> caches = new ConcurrentHashMap<>();
     private final Consumer<HistoryEvent> listener = e -> invalidate(e.endpointId());
+    private final Consumer<String> deleteListener = this::invalidate;
     private final AtomicLong computations = new AtomicLong();
 
     /**
@@ -57,6 +58,7 @@ public final class UptimeCalculator implements AutoCloseable {
         this.maintenanceCountsAsDowntime = maintenanceCountsAsDowntime;
         this.clock = Objects.requireNonNull(clock, "clock");
         history.addListener(listener);
+        history.addDeleteListener(deleteListener);
     }
 
     public ZoneId zone() {
@@ -141,6 +143,7 @@ public final class UptimeCalculator implements AutoCloseable {
     @Override
     public void close() {
         history.removeListener(listener);
+        history.removeDeleteListener(deleteListener);
     }
 
     /** Number of window computations so far (each uncached day, and each rolling window). */

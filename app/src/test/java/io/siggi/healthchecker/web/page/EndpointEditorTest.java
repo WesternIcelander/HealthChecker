@@ -1,6 +1,7 @@
 package io.siggi.healthchecker.web.page;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import io.siggi.healthchecker.api.CheckPlugin;
 import io.siggi.healthchecker.api.CheckResult;
 import io.siggi.healthchecker.api.Checker;
@@ -21,6 +22,10 @@ import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.config.ServerConfig;
 import io.siggi.healthchecker.config.UnknownHostsPolicy;
+import io.siggi.healthchecker.history.HistoryStore;
+import io.siggi.healthchecker.status.CheckRecord;
+import io.siggi.healthchecker.status.StateChange;
+import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.plugin.PluginManager;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.site.SiteResolver;
@@ -54,6 +59,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** The endpoint editor ({@code /admin/endpoints…}), end to end over HTTP. */
 class EndpointEditorTest {
     private static final Role MANAGE_ONLY = new Role("manage-only", EnumSet.of(Permission.ENDPOINTS_MANAGE));
+    /** May manage endpoints but not delete history. */
+    private static final Role MANAGER = new Role("manager",
+            EnumSet.of(Permission.ENDPOINTS_MANAGE, Permission.VIEW_PRIVATE));
 
     @TempDir
     Path dataDir;
@@ -65,6 +73,7 @@ class EndpointEditorTest {
     private WebServer web;
     private PluginManager plugins;
     private EndpointStore store;
+    private HistoryStore history;
     /** Replaces the default "Test now" limiter when set before {@link #start}. */
     private ActionRateLimiter testLimiter;
 
@@ -153,12 +162,15 @@ class EndpointEditorTest {
                 """.formatted(new Gson().toJson(dataDir.toString())));
         plugins = PluginManager.load(List.of(new HttpCheckPlugin(), new TestPlugin()), null, getClass().getClassLoader());
         store = EndpointStore.load(config, plugins::validate);
+        history = HistoryStore.open(dataDir);
+        store.reserveIdsWithHistory(history::hasHistory);
 
         UserDirectory users = UserDirectory.of(List.of(
                 new User("root", "Root", Role.ADMIN, null, List.of(), false),
                 new User("vic", "Vic", Role.VIEWER, null, List.of(), false),
                 new User("mgr", "Mgr", MANAGE_ONLY, null, List.of(), false),
-                new User("ada", "Ada", Role.ADMIN, null, List.of(), false)));
+                new User("ada", "Ada", Role.ADMIN, null, List.of(), false),
+                new User("max", "Max", MANAGER, null, List.of(), false)));
         web = new WebServer(new ServerConfig(0, "127.0.0.1", null, List.of(), UnknownHostsPolicy.DEFAULT));
         SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
         Permissions permissions = new Permissions(sessions, users::user);
@@ -171,8 +183,9 @@ class EndpointEditorTest {
                 sessions.csrfToken(request)));
         CHECKS.set(0);
         CLOSED.set(0);
-        (testLimiter == null ? new EndpointEditor(sites, permissions, sessions, store, plugins, config)
-                : new EndpointEditor(sites, permissions, sessions, store, plugins, config, testLimiter)).register(web);
+        (testLimiter == null ? new EndpointEditor(sites, permissions, sessions, store, plugins, config, history)
+                : new EndpointEditor(sites, permissions, sessions, store, plugins, config, history, testLimiter))
+                .register(web);
         web.start();
     }
 
@@ -180,6 +193,7 @@ class EndpointEditorTest {
     void stop() {
         if (web != null) web.close();
         if (plugins != null) plugins.close();
+        if (history != null) history.close();
     }
 
     // ---- HTTP helpers ----
@@ -568,5 +582,156 @@ class EndpointEditorTest {
         assertEquals(404, get("/admin/endpoints/Bad_Id", root).statusCode());
         assertEquals(404, get("/admin/endpoints/website/x", root).statusCode());
         assertEquals(404, post("/admin/endpoints/nope", root, testForm("nope", "x.example.invalid")).statusCode());
+    }
+
+    // ---- delete ----
+
+    /** Saves dashboard endpoint {@code id}, records a failed check (an outage) for it and stops monitoring it. */
+    private void createWithHistory(String id) throws Exception {
+        Session root = login("root");
+        assertEquals(303, post("/admin/endpoints/new", root,
+                testForm(id, id + ".example.invalid", "version", Integer.toString(store.version()))).statusCode());
+        StatusRegistry status = new StatusRegistry();
+        status.register(id, 1);
+        CheckRecord failed = new CheckRecord(Instant.parse("2026-01-01T00:00:00Z"), Duration.ofMillis(5),
+                CheckResult.fail("down"));
+        StateChange change = status.record(id, failed).orElseThrow();
+        history.record(id, failed, change);
+        history.stopMonitoring(id);
+        assertTrue(history.hasHistory(id));
+        assertEquals(1, history.events(id).size());
+    }
+
+    private Map<String, String> deleteForm(String confirm, String... extra) {
+        Map<String, String> f = new LinkedHashMap<>();
+        f.put("version", Integer.toString(store.version()));
+        f.put("confirm", confirm);
+        for (int i = 0; i < extra.length; i += 2) f.put(extra[i], extra[i + 1]);
+        return f;
+    }
+
+    @Test
+    void deleteAsksForTheIdAndKeepsHistoryByDefault() throws Exception {
+        start(null);
+        createWithHistory("shop");
+        Session root = login("root");
+        String edit = get("/admin/endpoints/shop", root).body();
+        assertTrue(edit.contains("href=\"/admin/endpoints/shop/delete\""), "edit form links to delete");
+
+        HttpResponse<String> page = get("/admin/endpoints/shop/delete", root);
+        assertEquals(200, page.statusCode());
+        assertTrue(page.body().contains("name=\"confirm\""));
+        assertTrue(page.body().contains("name=\"deleteHistory\""), "admin may delete history");
+        assertFalse(page.body().contains("name=\"deleteHistory\" value=\"on\" checked"), "unticked by default");
+
+        // Wrong confirmation: nothing deleted.
+        HttpResponse<String> wrong = post("/admin/endpoints/shop/delete", root, deleteForm("shops"));
+        assertEquals(400, wrong.statusCode());
+        assertTrue(wrong.body().contains("Type the id"));
+        assertTrue(store.endpoint("shop").isPresent());
+        // No CSRF token: refused.
+        assertEquals(403, post("/admin/endpoints/shop/delete", new Session(root.cookie(), "x"), deleteForm("shop"))
+                .statusCode());
+        assertTrue(store.endpoint("shop").isPresent());
+
+        HttpResponse<String> r = post("/admin/endpoints/shop/delete", root, deleteForm("shop"));
+        assertEquals(303, r.statusCode(), r.body());
+        assertEquals("/admin/endpoints?deleted=shop", r.headers().firstValue("Location").orElseThrow());
+        assertTrue(store.endpoint("shop").isEmpty());
+        assertFalse(Files.readString(dataDir.resolve(EndpointStore.FILE_NAME)).contains("\"shop\""));
+        // History kept, in memory and on disk.
+        assertTrue(history.hasHistory("shop"));
+        assertEquals(1, history.events("shop").size());
+        assertTrue(Files.isDirectory(dataDir.resolve("endpoints").resolve("shop")));
+        assertTrue(get("/admin/endpoints?deleted=shop", root).body().contains("Its history was kept"));
+        assertEquals(404, get("/admin/endpoints/shop/delete", root).statusCode());
+    }
+
+    @Test
+    void historyIsDeletedOnlyWithPermission() throws Exception {
+        start(null);
+        createWithHistory("shop");
+        createWithHistory("blog");
+        Path shopDir = dataDir.resolve("endpoints").resolve("shop");
+        assertTrue(Files.isDirectory(shopDir));
+
+        // Without history.delete: no checkbox, and ticking it anyway is refused with nothing deleted.
+        Session max = login("max");
+        String page = get("/admin/endpoints/shop/delete", max).body();
+        assertFalse(page.contains("name=\"deleteHistory\""));
+        assertTrue(page.contains("history.delete"));
+        HttpResponse<String> refused = post("/admin/endpoints/shop/delete", max, deleteForm("shop", "deleteHistory", "on"));
+        assertEquals(403, refused.statusCode());
+        assertTrue(store.endpoint("shop").isPresent());
+        assertTrue(history.hasHistory("shop"));
+
+        // With it: endpoint and history are gone, on disk too.
+        Session root = login("root");
+        HttpResponse<String> r = post("/admin/endpoints/shop/delete", root, deleteForm("shop", "deleteHistory", "on"));
+        assertEquals(303, r.statusCode(), r.body());
+        assertEquals("/admin/endpoints?deleted=shop&history=deleted", r.headers().firstValue("Location").orElseThrow());
+        assertTrue(store.endpoint("shop").isEmpty());
+        assertFalse(history.hasHistory("shop"));
+        assertTrue(history.events("shop").isEmpty());
+        assertFalse(Files.exists(shopDir));
+        try (var files = Files.list(dataDir.resolve("endpoints"))) {
+            assertEquals(List.of("blog"), files.map(f -> f.getFileName().toString()).toList(), "nothing left behind");
+        }
+        // The other endpoint's history is untouched.
+        assertEquals(1, history.events("blog").size());
+        // A user without history.delete can still delete a service, keeping its history.
+        assertEquals(303, post("/admin/endpoints/blog/delete", max, deleteForm("blog")).statusCode());
+        assertTrue(history.hasHistory("blog"));
+
+        // After a reload, the deleted history stays deleted.
+        history.close();
+        history = HistoryStore.open(dataDir);
+        assertFalse(history.hasHistory("shop"));
+        assertTrue(history.hasHistory("blog"));
+    }
+
+    @Test
+    void idCantBeReusedWhileItsHistoryExists() throws Exception {
+        start(null);
+        createWithHistory("shop");
+        Session root = login("root");
+        assertEquals(303, post("/admin/endpoints/shop/delete", root, deleteForm("shop")).statusCode());
+
+        HttpResponse<String> reuse = post("/admin/endpoints/new", root,
+                testForm("shop", "other.example.invalid", "version", Integer.toString(store.version())));
+        assertEquals(400, reuse.statusCode());
+        assertTrue(field(withoutTemplates(reuse.body()), "id").contains("still has history"), reuse.body());
+        assertTrue(store.endpoint("shop").isEmpty());
+        // The store itself refuses it too.
+        JsonObject entry = new JsonObject();
+        entry.addProperty("id", "shop");
+        entry.addProperty("name", "Other shop");
+        entry.addProperty("type", "test");
+        entry.addProperty("host", "other.example.invalid");
+        EndpointStore.InvalidEntryException e = org.junit.jupiter.api.Assertions.assertThrows(
+                EndpointStore.InvalidEntryException.class, () -> store.putEndpoint(store.version(), entry));
+        assertTrue(e.getMessage().contains("still has history"));
+
+        // Once the history is deleted, the id is free again.
+        assertTrue(history.deleteHistory("shop"));
+        assertEquals(303, post("/admin/endpoints/new", root,
+                testForm("shop", "other.example.invalid", "version", Integer.toString(store.version()))).statusCode());
+        assertTrue(store.endpoint("shop").isPresent());
+        // Editing an existing endpoint isn't affected by its own history.
+        history.rememberTargets("shop", List.of("other.example.invalid"));
+        assertEquals(303, post("/admin/endpoints/shop", root, testForm("shop", "third.example.invalid",
+                "version", Integer.toString(store.version()))).statusCode());
+    }
+
+    @Test
+    void configDefinedEndpointCantBeDeleted() throws Exception {
+        start(null);
+        Session root = login("root");
+        assertEquals(403, get("/admin/endpoints/website/delete", root).statusCode());
+        assertEquals(403, post("/admin/endpoints/website/delete", root, deleteForm("website")).statusCode());
+        assertTrue(store.endpoint("website").isPresent());
+        assertFalse(get("/admin/endpoints/website", root).body().contains("/delete"));
+        // Viewers can't reach the delete page at all.
+        assertEquals(403, get("/admin/endpoints/website/delete", login("vic")).statusCode());
     }
 }

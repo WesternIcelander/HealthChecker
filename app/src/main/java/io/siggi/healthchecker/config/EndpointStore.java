@@ -31,6 +31,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 
 /**
  * Endpoints and categories from both sources: {@code config.json} (read-only) and
@@ -138,6 +139,7 @@ public final class EndpointStore {
     private final List<String> warnings;
     private volatile State state;
     private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
+    private volatile Predicate<String> hasHistory = id -> false;
 
     private EndpointStore(Path file, Config config, Validator validator, State state, List<String> warnings) {
         this.file = file;
@@ -243,7 +245,8 @@ public final class EndpointStore {
      * config entry including the plugin's {@code create()}.
      *
      * @return the stored, enabled endpoint
-     * @throws InvalidEntryException    if the entry is invalid or its id belongs to a config endpoint
+     * @throws InvalidEntryException    if the entry is invalid, its id belongs to a config endpoint, or it's
+     *                                  a new endpoint whose id still has history (see {@link #reserveIdsWithHistory})
      * @throws VersionConflictException if {@code expectedVersion} isn't the current version
      * @throws IOException              if writing fails; nothing changes then
      */
@@ -255,6 +258,10 @@ public final class EndpointStore {
         StoredEndpoint stored = new StoredEndpoint(id, Source.DASHBOARD, definition, entry, List.of());
         List<StoredEndpoint> endpoints = new ArrayList<>(current.endpoints());
         int index = indexOf(endpoints, id);
+        if (index < 0 && hasHistory.test(id)) {
+            throw new InvalidEntryException(List.of("id: \"" + id + "\" still has history from a deleted service; "
+                    + "choose another id (it can be reused once that history is deleted)"));
+        }
         if (index >= 0) {
             endpoints.set(index, stored);
         } else {
@@ -262,6 +269,15 @@ public final class EndpointStore {
         }
         write(new State(current.version() + 1, current.categories(), endpoints));
         return stored;
+    }
+
+    /**
+     * Blocks reusing ids that still have history: {@link #putEndpoint} refuses to create a new
+     * endpoint whose id {@code hasHistory} accepts (history of a deleted or no longer configured
+     * endpoint), so two services' histories never mix. Existing endpoints aren't affected.
+     */
+    public void reserveIdsWithHistory(Predicate<String> hasHistory) {
+        this.hasHistory = Objects.requireNonNull(hasHistory, "hasHistory");
     }
 
     /**

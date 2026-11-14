@@ -62,6 +62,8 @@ final class Daemon implements AutoCloseable {
             throws IOException {
         this.history = history;
         this.endpoints = endpoints;
+        // A deleted endpoint's id can't be reused while its history is kept.
+        endpoints.reserveIdsWithHistory(history::hasHistory);
         Clock clock = Clock.systemUTC();
         registry = new EndpointRegistry(new EndpointFactory(plugins));
         scheduler = new CheckScheduler(registry, status);
@@ -114,7 +116,8 @@ final class Daemon implements AutoCloseable {
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
                 endpoints::categoryConfigs, endpoints::definitions);
         layoutEditor.register(web);
-        EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config);
+        EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config,
+                history);
         endpointEditor.register(web);
         StatusPage statusPage = new StatusPage(sites, layoutEditor::layout,
                 lookup, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);

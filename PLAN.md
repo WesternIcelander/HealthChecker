@@ -1091,7 +1091,7 @@ test list are build, docs or manual steps.
 - [x] Endpoint editor: common fields, type dropdown, type-specific form generated from `settings()`, field-level errors, no-JS two-step fallback, read-only view with "config" badge. **Tests:** form rendered from a test plugin's `settings()`; plugin validation error shown on its field; config-defined endpoint can't be edited via POST; no `endpoints.manage` → 403.
 - [x] Save applies live via `EndpointRegistry` (in-place vs replace-checker rules; `endedByConfigChange`; reminder cancellation). **Tests:** create → checked within one interval; name edit keeps state and open event; host edit replaces checker and closes event as `endedByConfigChange`; no target leaks into public pages after edits.
 - [x] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
-- [ ] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
+- [x] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
 - [ ] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
 - [ ] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
 
@@ -1614,3 +1614,16 @@ them; see CLAUDE.md.
   form is shown again with the result above it: passed/failed, latency, message and details, and "Nothing was saved."
   Nothing is written, registered or recorded in the history or status. The request waits for the check (at most the
   endpoint's timeout plus grace).
+- Delete (app, `web.page.EndpointEditor`, `HistoryStore.deleteHistory`, `EndpointStore.reserveIdsWithHistory`):
+  `GET /admin/endpoints/{id}/delete` is the confirmation page (same access as the editor; config-defined endpoints get
+  `403` on GET and POST), linked as "Delete…" from the edit form and "Delete" on the service page for dashboard
+  endpoints. `POST` (CSRF) needs `confirm` = the id (else `400`, nothing deleted) and the `version` (`409`); it removes
+  the entry with `EndpointStore.removeEndpoint`, whose change listener stops the checks and ends coverage (an open event
+  closes as `endedUnobserved`), then redirects to `/admin/endpoints?deleted={id}` with a notice. The "also delete
+  history" checkbox (`deleteHistory=on`) is only shown with `history.delete`; sent without it, the request is `403`
+  and nothing is deleted. Deleting history renames `endpoints/{id}` to `endpoints/.deleted-{id}-{uuid}` first, then
+  removes it (a leftover is removed at the next load), drops it from memory and tells delete listeners (the uptime
+  cache). Id reuse: `EndpointStore.putEndpoint` refuses a **new** endpoint whose id `HistoryStore.hasHistory` (any
+  stored coverage, events or targets, also of an endpoint removed from `config.json`); the error is on the `id` field.
+  "Test now" isn't affected. There's no dashboard action to delete the history of an already-deleted endpoint: remove
+  `data/endpoints/{id}` while the app is stopped to free the id.

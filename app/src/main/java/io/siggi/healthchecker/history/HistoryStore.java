@@ -72,6 +72,8 @@ public final class HistoryStore implements AutoCloseable {
     private static final String COVERAGE_FILE = "coverage.json";
     private static final String TARGETS_FILE = "targets.json";
     private static final String EVENTS_DIR = "events";
+    /** Prefix of an endpoint directory being deleted (renamed first, so a crash leaves no half history). */
+    private static final String DELETED_PREFIX = ".deleted-";
 
     /** Replaces a file's content; {@link AtomicFiles#write(Path, byte[])} outside tests. */
     @FunctionalInterface
@@ -85,6 +87,7 @@ public final class HistoryStore implements AutoCloseable {
     private final FileWriter writer;
     private final Map<String, EndpointHistory> histories = new TreeMap<>();
     private final List<Consumer<HistoryEvent>> listeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<String>> deleteListeners = new CopyOnWriteArrayList<>();
     private ScheduledExecutorService heartbeatExecutor;
 
     private HistoryStore(Path dataDir, Clock clock, Logger logger, FileWriter writer) {
@@ -127,7 +130,9 @@ public final class HistoryStore implements AutoCloseable {
         List<Path> dirs = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(endpointsDir)) {
             for (Path dir : stream) {
-                if (Files.isDirectory(dir)) {
+                if (dir.getFileName().toString().startsWith(DELETED_PREFIX)) {
+                    deleteTree(dir); // an interrupted history deletion
+                } else if (Files.isDirectory(dir)) {
                     dirs.add(dir);
                 }
             }
@@ -386,6 +391,75 @@ public final class HistoryStore implements AutoCloseable {
             executor.shutdownNow();
         }
         heartbeat();
+    }
+
+    // ---- deleting ----
+
+    /**
+     * Adds a listener called (under the store's lock) with the endpoint id after its history was
+     * {@linkplain #deleteHistory deleted}.
+     */
+    public void addDeleteListener(Consumer<String> listener) {
+        deleteListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    public void removeDeleteListener(Consumer<String> listener) {
+        deleteListeners.remove(listener);
+    }
+
+    /** Whether there is stored or recorded history (coverage, events or remembered targets) for the endpoint. */
+    public synchronized boolean hasHistory(String endpointId) {
+        return histories.containsKey(endpointId);
+    }
+
+    /**
+     * Deletes all history of an endpoint: coverage, events with their notes, and remembered targets,
+     * in memory and on disk. Meant for an endpoint that was removed (and so is no longer monitored);
+     * an active coverage period is discarded too. The directory is first renamed, so it disappears
+     * at once and a leftover of an interrupted deletion is removed at the next load.
+     *
+     * @return whether there was any history
+     * @throws IOException if the directory couldn't be renamed; nothing changes then
+     */
+    public synchronized boolean deleteHistory(String endpointId) throws IOException {
+        EndpointHistory h = histories.get(Objects.requireNonNull(endpointId, "endpointId"));
+        Path dir = endpointsDir.resolve(endpointId);
+        if (h == null && !Files.exists(dir)) {
+            return false;
+        }
+        if (Files.exists(dir)) {
+            Path doomed = endpointsDir.resolve(DELETED_PREFIX + endpointId + "-" + UUID.randomUUID());
+            Files.move(dir, doomed);
+            try {
+                deleteTree(doomed);
+            } catch (IOException e) {
+                logger.log(Level.WARNING, "Couldn't remove " + doomed + " completely; it's removed at the next start", e);
+            }
+        }
+        histories.remove(endpointId);
+        logger.log(Level.INFO, endpointId + ": history deleted");
+        for (Consumer<String> listener : deleteListeners) {
+            try {
+                listener.accept(endpointId);
+            } catch (RuntimeException ex) {
+                logger.log(Level.ERROR, "History delete listener failed for " + endpointId, ex);
+            }
+        }
+        return true;
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        if (Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(root)) {
+                for (Path child : stream) {
+                    deleteTree(child);
+                }
+            }
+        }
+        Files.deleteIfExists(root);
     }
 
     // ---- editing ----
