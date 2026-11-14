@@ -1048,7 +1048,7 @@ test list are build, docs or manual steps.
 
 ### M4 — Scheduling & live state
 - [x] `StatusRegistry`: `failureThreshold` state machine, failure streak start time, recent checks (last 100), `StateChange` events, transition logging. **Tests:** thresholds 1 and 3; streak start time; UNKNOWN → UP/DOWN on first result; recent checks capped at 100.
-- [ ] `EndpointRegistry` with runtime add / update-in-place / replace-checker / remove; `CheckScheduler` follows it (per-endpoint schedule, jitter, virtual threads, enforced timeout, skip-if-stuck). **Tests:** plugin that throws; hangs; ignores interrupts (skip-if-stuck); endpoint added/replaced/removed while running (old checker closed, no stray runs).
+- [x] `EndpointRegistry` with runtime add / update-in-place / replace-checker / remove; `CheckScheduler` follows it (per-endpoint schedule, jitter, virtual threads, enforced timeout, skip-if-stuck). **Tests:** plugin that throws; hangs; ignores interrupts (skip-if-stuck); endpoint added/replaced/removed while running (old checker closed, no stray runs).
 
 ### M5 — History store & uptime
 - [ ] `HistoryStore`: coverage periods with minute heartbeat; events (open/close, `start` = first failure of streak); yearly JSONL files; atomic writes; load at startup. Restart handling: close open events as `endedUnobserved`; coverage gap while app was down. **Tests:** write/read round trip; restart while down; restart while up leaves a gap; crash mid-write leaves the previous file intact.
@@ -1240,3 +1240,19 @@ them; see CLAUDE.md.
   Re-registering an endpoint only updates its threshold (state kept, applied from the next check);
   removing it drops its status, and late results for it are ignored. Transitions are logged via
   `System.Logger` (DOWN as WARNING, others INFO).
+- `EndpointRegistry` / `CheckScheduler` (app, package `schedule`): `EndpointFactory` builds an
+  `Endpoint` (definition, declared targets, checker) the same way validation does (unknown type,
+  plugin `create()`, unread settings; a rejected checker is closed again). An update rebuilds the
+  checker only when type, settings, interval, timeout or failure threshold changed; otherwise it's
+  applied in place (same checker, state kept). An identical definition is a no-op; a failed update
+  changes nothing. Registry listeners run in order under the registry lock; the scheduler owns
+  the checkers it runs and closes retired ones. The first check runs after a random delay of up
+  to `min(interval, 10 s)`, then at a fixed rate. The timeout grace period is 1 s. While the
+  previous check is still running the next run is skipped: silently if that check is still within
+  timeout + grace, counted as a failure ("skipped, previous check still stuck") once it has timed
+  out. A thrown exception becomes "check failed (ExceptionClass)" (the full exception is only
+  logged), a `null` result "check returned no result", a timeout "timeout after N ms". On replace
+  or remove the in-flight check is interrupted, its result discarded, no new check starts, and the
+  checker is closed when that check returns, or after the grace period at the latest (logged).
+  `close()` stops everything, waits up to the grace period, and closes every checker. `run` doesn't
+  start the scheduler yet; that comes with the web server and shutdown handling.
