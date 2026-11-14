@@ -140,38 +140,17 @@ class LocalLoginTest {
     }
 
     @Test
-    void settingsFromConfig() {
-        LocalLogin.Settings s = LocalLogin.settings(json("""
-                {"users": [
-                  {"id": "alice", "role": "admin", "password": "%s"},
-                  {"id": "jane", "role": "viewer", "identities": ["google:1"]},
-                  {"id": "old", "role": "viewer", "password": "%s", "disabled": true}
-                ]}""".formatted(ALICE_HASH, ALICE_HASH)));
-        assertTrue(s.enabled());
-        assertEquals(Map.of("alice", ALICE_HASH), s.passwordHashes());
-        assertEquals(Optional.of(ALICE_HASH), s.credentials().passwordHash("alice"));
-        assertEquals(Optional.empty(), s.credentials().passwordHash("jane"));
-        assertEquals(Optional.empty(), s.credentials().passwordHash("old"));
-        assertFalse(LocalLogin.settings(json("{\"local\": {\"enabled\": false}}")).enabled());
-        assertTrue(LocalLogin.settings(null).enabled());
-    }
-
-    @Test
-    void settingsErrors() {
+    void enabledFromConfig() {
+        assertTrue(LocalLogin.enabled(null));
+        assertTrue(LocalLogin.enabled(json("{}")));
+        assertTrue(LocalLogin.enabled(json("{\"local\": {}}")));
+        assertFalse(LocalLogin.enabled(json("{\"local\": {\"enabled\": false}}")));
         List<String> errors = new ArrayList<>();
-        LocalLogin.settings(json("""
-                {"local": {"enabled": "no"}, "users": [
-                  {"id": "alice", "password": "pbkdf2-sha256$1000$AAAA$BBBB"},
-                  {"id": "bob", "password": 5},
-                  {"role": "viewer"}
-                ]}"""), errors);
-        assertEquals(4, errors.size(), errors.toString());
-        assertTrue(errors.get(0).startsWith("auth.local.enabled"), errors.get(0));
-        assertTrue(errors.get(1).startsWith("auth.users[0] \"alice\": password hash"), errors.get(1));
-        assertFalse(errors.get(1).contains("AAAA"), errors.get(1));
-        assertTrue(errors.get(2).startsWith("auth.users[1] \"bob\": password"), errors.get(2));
-        assertTrue(errors.get(3).startsWith("auth.users[2]: id"), errors.get(3));
-        assertThrows(IllegalArgumentException.class, () -> LocalLogin.settings(json("{\"users\": 1}")));
+        LocalLogin.enabled(json("{\"local\": {\"enabled\": \"no\", \"other\": 1}}"), errors);
+        assertEquals(2, errors.size(), errors.toString());
+        assertTrue(errors.contains("auth.local: unknown key \"other\""), errors.toString());
+        assertTrue(errors.contains("auth.local.enabled must be true or false"), errors.toString());
+        assertThrows(IllegalArgumentException.class, () -> LocalLogin.enabled(json("{\"local\": 1}")));
     }
 
     static final class MutableClock extends Clock {

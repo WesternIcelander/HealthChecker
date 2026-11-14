@@ -3,6 +3,10 @@ package io.siggi.healthchecker.web.page;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.LoginRateLimiter;
 import io.siggi.healthchecker.auth.PasswordHasher;
+import io.siggi.healthchecker.auth.Permissions;
+import io.siggi.healthchecker.auth.Role;
+import io.siggi.healthchecker.auth.User;
+import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.ServerConfig;
 import io.siggi.healthchecker.config.UnknownHostsPolicy;
@@ -62,7 +66,11 @@ class LoginPageTest {
         LocalLogin local = new LocalLogin(localEnabled,
                 username -> Optional.ofNullable(Map.of("alice", ALICE_HASH, "bob", ALICE_HASH).get(username)),
                 limiter);
-        new LoginPage(sites, sessions, local, web.trustedProxies()).register(web);
+        UserDirectory users = UserDirectory.of(List.of(
+                new User("alice", "alice", Role.ADMIN, ALICE_HASH, List.of(), false),
+                new User("bob", "bob", Role.VIEWER, ALICE_HASH, List.of(), false)));
+        new LoginPage(sites, sessions, new Permissions(sessions, users::user), local, web.trustedProxies())
+                .register(web);
         web.start();
     }
 

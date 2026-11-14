@@ -1,11 +1,13 @@
 package io.siggi.healthchecker.web.page;
 
+import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.config.DashboardConfig;
 import io.siggi.healthchecker.history.DaySummary;
 import io.siggi.healthchecker.status.State;
 import io.siggi.healthchecker.web.Durations;
 import io.siggi.healthchecker.web.Html;
 import io.siggi.healthchecker.web.site.Site;
+import io.siggi.healthchecker.web.view.Viewer;
 import io.siggi.http.HTTPRequest;
 
 import java.nio.charset.StandardCharsets;
@@ -22,8 +24,10 @@ final class PageSupport {
      *
      * @param title       the document title (already including the site title where wanted)
      * @param autoRefresh whether to add a 60 s {@code <meta http-equiv="refresh">}
+     * @param viewer      who is signed in, for the header (name, role, sign-out button; a "Sign in"
+     *                    link for anonymous visitors), or {@code null} for no user area (sign-in pages)
      */
-    static void head(StringBuilder html, Site site, String title, boolean autoRefresh) {
+    static void head(StringBuilder html, Site site, String title, boolean autoRefresh, Viewer viewer) {
         html.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
                 .append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
         if (autoRefresh) {
@@ -31,8 +35,30 @@ final class PageSupport {
         }
         html.append("<title>").append(Html.escape(title)).append("</title>\n")
                 .append("<link rel=\"stylesheet\" href=\"").append(Html.escape(site.link("/static/style.css"))).append("\">\n")
-                .append("</head>\n<body>\n<header class=\"site-header\"><h1><a href=\"").append(Html.escape(site.link("/"))).append("\">")
-                .append(Html.escape(site.title())).append("</a></h1></header>\n<main>\n");
+                .append("</head>\n<body>\n<header class=\"site-header\"><div class=\"header-inner\"><h1><a href=\"")
+                .append(Html.escape(site.link("/"))).append("\">").append(Html.escape(site.title())).append("</a></h1>");
+        if (viewer != null) userArea(html, site, viewer);
+        html.append("</div></header>\n<main>\n");
+    }
+
+    /** The header's user area: name, role and a sign-out button, or a "Sign in" link. */
+    private static void userArea(StringBuilder html, Site site, Viewer viewer) {
+        html.append("<nav class=\"user-nav\" aria-label=\"Account\">");
+        if (viewer.anonymous()) {
+            html.append("<a href=\"").append(Html.escape(site.link("/login"))).append("\">Sign in</a>");
+        } else {
+            html.append("<span class=\"user-name\">").append(Html.escape(viewer.userName())).append("</span>");
+            if (viewer.role() != null) {
+                html.append(" <span class=\"user-role\">").append(Html.escape(viewer.role())).append("</span>");
+            }
+            if (viewer.csrfToken() != null) {
+                html.append("<form class=\"logout\" method=\"post\" action=\"").append(Html.escape(site.link("/logout")))
+                        .append("\"><input type=\"hidden\" name=\"").append(SessionManager.CSRF_FIELD)
+                        .append("\" value=\"").append(Html.escape(viewer.csrfToken()))
+                        .append("\"><button type=\"submit\">Sign out</button></form>");
+            }
+        }
+        html.append("</nav>");
     }
 
     /** Closes what {@link #head} opened and adds the script. */

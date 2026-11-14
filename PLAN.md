@@ -1079,7 +1079,7 @@ test list are build, docs or manual steps.
 - [x] Sessions via `SessionsBuilder` (no deprecated session API), cookie flags, ID rotation with `resetSession`, sliding expiry, CSRF tokens. **Tests:** cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS); anonymous page views set no cookie; ID changes on login; expiry; logout clears the cookie; CSRF rejection.
 - [x] PBKDF2 hashing + `hash-password` subcommand. **Tests:** hash/verify round trip; wrong password; malformed hash string.
 - [x] `/login` (form, constant-time, dummy hash for unknown users), `/logout` (POST + CSRF), rate limiter. **Tests:** success; wrong password; unknown user; rate limit per IP and per username; logout requires CSRF.
-- [ ] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
+- [x] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
 
 ### M10 — Dashboard editing: layout, event titles & notes
 - [ ] Layout editor on the main page (drag and drop plus up/down buttons and category dropdown; private services with visibility markers) and `POST /admin/layout` (CSRF, version check → 409, "Reset to config order", atomic write). **Tests:** save and reload; move service between categories; reorder categories incl. "Other"; conflicting save gets 409; no `layout.edit` → 403; unknown ids rejected; reset restores config order.
@@ -1491,3 +1491,23 @@ them; see CLAUDE.md.
   form isn't shown and `POST /login` is `404`. Until the users and roles step, `run` reads only what login needs from
   `auth` (`local.enabled`, each user's `id`, `password` (validated hash) and `disabled`); failed sign-ins are logged
   with the client IP only (never the username or password); the audit log records come with `/admin/audit`.
+- Users, roles and permissions (app, `auth.Permission`, `Role`, `User`, `UserDirectory`, `Permissions`): `Permission` is
+  an enum of the eight config names; `Role.VIEWER`/`EDITOR`/`ADMIN` are fixed (`admin` = every permission). Custom roles
+  in `auth.roles` are lists of permission names only (no role inheritance); names match `[a-z0-9][a-z0-9._-]{0,63}`, a
+  built-in name is an error, an unknown permission is an error naming the known ones (case-sensitive), an empty list is
+  allowed. User ids use the same pattern (it's also the password-login username). User keys: `id`, `displayName`
+  (non-blank, defaults to the id), `role` (required, built-in or custom), `password` (valid hash), `identities` and
+  `disabled`; anything else is an unknown-key error, as is any key in `auth.local` but `enabled`. An identifier is
+  `providerId:value` (both parts non-empty), its provider must be the `id` of an entry in `auth.providers` (only the ids
+  are read until M13 validates providers), and it may appear once in the whole user list. `auth.rules` and
+  `auth.providers` are still left alone (M13). `run` reports all of these with the other configuration errors;
+  `UserDirectory` replaces the interim user parsing in `LocalLogin`, which now only reads `auth.local.enabled`.
+  `Permissions` is the one helper every responder uses: it reads the session's user id, looks the user up in the
+  directory on each request, and ends the session (`deleteSession`, cookie cleared) when that user is disabled or no
+  longer configured, treating the request as anonymous. `viewer(request)` gives the pages' `Viewer` (display name, role,
+  `view.private`, and the session's CSRF token for the header); `require(request, site, permission)` answers `303` to
+  `/login?next=<path and query>` (for a GET, else `next=/`) for anonymous visitors and `403` (plain text) for signed-in
+  users without the permission. The page header shows the display name, the role and a "Sign out" button (POST with
+  the CSRF token), or a "Sign in" link for anonymous visitors (no session is started for them); the sign-in pages have
+  no user area. A signed-in user without `view.private` gets exactly the anonymous data in HTML and JSON (the JSON
+  `viewer` field is their display name).

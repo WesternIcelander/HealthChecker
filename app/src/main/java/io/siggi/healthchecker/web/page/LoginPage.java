@@ -1,6 +1,7 @@
 package io.siggi.healthchecker.web.page;
 
 import io.siggi.healthchecker.auth.LocalLogin;
+import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.web.Html;
 import io.siggi.healthchecker.web.TrustedProxies;
@@ -31,10 +32,13 @@ public final class LoginPage {
     private final SessionManager sessions;
     private final LocalLogin local;
     private final TrustedProxies trustedProxies;
+    private final Permissions permissions;
 
-    public LoginPage(SiteResolver sites, SessionManager sessions, LocalLogin local, TrustedProxies trustedProxies) {
+    public LoginPage(SiteResolver sites, SessionManager sessions, Permissions permissions, LocalLogin local,
+                     TrustedProxies trustedProxies) {
         this.sites = sites;
         this.sessions = sessions;
+        this.permissions = permissions;
         this.local = local;
         this.trustedProxies = trustedProxies;
     }
@@ -70,7 +74,7 @@ public final class LoginPage {
             return;
         }
         String next = safeNext(request.get().get("next"));
-        Optional<String> user = sessions.userId(request);
+        Optional<Permissions.SignedIn> user = permissions.signedIn(request);
         if (user.isPresent()) {
             signedIn(request, site, user.get(), next);
         } else {
@@ -128,7 +132,7 @@ public final class LoginPage {
     private void form(HTTPRequest request, Site site, String status, String error, String username, String next)
             throws Exception {
         StringBuilder html = new StringBuilder(4096);
-        PageSupport.head(html, site, "Sign in · " + site.title(), false);
+        PageSupport.head(html, site, "Sign in · " + site.title(), false, null);
         html.append("<section class=\"login\">\n<h2>Sign in</h2>\n");
         if (error != null) {
             html.append("<p class=\"form-error\" role=\"alert\">").append(Html.escape(error)).append("</p>\n");
@@ -155,12 +159,13 @@ public final class LoginPage {
         writePage(request, status, html);
     }
 
-    private void signedIn(HTTPRequest request, Site site, String userId, String next) throws Exception {
+    private void signedIn(HTTPRequest request, Site site, Permissions.SignedIn user, String next) throws Exception {
         String token = sessions.csrfToken(request);
         StringBuilder html = new StringBuilder(2048);
-        PageSupport.head(html, site, "Signed in · " + site.title(), false);
+        PageSupport.head(html, site, "Signed in · " + site.title(), false, null);
         html.append("<section class=\"login\">\n<h2>Signed in</h2>\n<p>You're signed in as <strong>")
-                .append(Html.escape(userId)).append("</strong>.</p>\n<p><a href=\"")
+                .append(Html.escape(user.user().displayName())).append("</strong> (")
+                .append(Html.escape(user.user().role().name())).append(").</p>\n<p><a href=\"")
                 .append(Html.escape(site.link(next))).append("\">Continue</a></p>\n")
                 .append("<form method=\"post\" action=\"").append(Html.escape(site.link("/logout"))).append("\">\n")
                 .append("<input type=\"hidden\" name=\"").append(SessionManager.CSRF_FIELD).append("\" value=\"")

@@ -426,7 +426,7 @@ public final class ServicePage {
         Service service = found.get();
         Site site = service.site();
         StringBuilder html = new StringBuilder(16384);
-        PageSupport.head(html, site, service.view().name() + " – " + site.title(), false);
+        PageSupport.head(html, site, service.view().name() + " – " + site.title(), false, service.viewer());
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n");
         headerHtml(html, header(service));
         // The list view is the default: any ?view= other than "calendar" shows it. A valid
@@ -461,7 +461,7 @@ public final class ServicePage {
         EventView e = event.get();
         String serviceLink = site.link(PREFIX + service.view().id());
         StringBuilder html = new StringBuilder(8192);
-        PageSupport.head(html, site, e.title() + " – " + site.title(), false);
+        PageSupport.head(html, site, e.title() + " – " + site.title(), false, service.viewer());
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a> › ")
                 .append("<a href=\"").append(Html.escape(serviceLink)).append("\">")
                 .append(Html.escape(service.view().name())).append("</a></p>\n")
@@ -497,7 +497,8 @@ public final class ServicePage {
         String calendarLink = site.link(PREFIX + service.view().id() + "?view=calendar&page="
                 + calendarPageFor(YearMonth.from(uptime.today()), date) + "#calendar");
         StringBuilder html = new StringBuilder(8192);
-        PageSupport.head(html, site, service.view().name() + " – " + date + " – " + site.title(), false);
+        PageSupport.head(html, site, service.view().name() + " – " + date + " – " + site.title(), false,
+                service.viewer());
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a> › ")
                 .append("<a href=\"").append(Html.escape(serviceLink)).append("\">")
                 .append(Html.escape(service.view().name())).append("</a> › ")

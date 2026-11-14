@@ -1,6 +1,5 @@
 package io.siggi.healthchecker.auth;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -10,9 +9,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -136,97 +133,36 @@ public final class LocalLogin {
 
     // ---- configuration ----
 
-    /** Password sign-in settings read from the raw {@code auth} section. */
-    public record Settings(boolean enabled, Map<String, String> passwordHashes) {
-        public Settings {
-            passwordHashes = Map.copyOf(passwordHashes);
-        }
-
-        public Credentials credentials() {
-            return username -> Optional.ofNullable(passwordHashes.get(username));
-        }
-    }
-
     /**
-     * Reads {@code auth.local.enabled} (default {@code true}) and the password hash of every user in
-     * {@code auth.users} that has one and isn't {@code disabled}. Usernames are user ids, matched
-     * exactly. Only what password sign-in needs is read here; the full user model (roles,
-     * identities, unknown keys) is validated by the users and roles step.
+     * Reads {@code auth.local.enabled} (default {@code true}). Users and their password hashes come
+     * from {@link UserDirectory}.
      *
      * @param auth   the raw {@code auth} section, or {@code null}
      * @param errors receives one message per problem, prefixed with its path
      */
-    public static Settings settings(JsonObject auth, List<String> errors) {
-        boolean enabled = true;
-        Map<String, String> hashes = new LinkedHashMap<>();
-        if (auth == null) return new Settings(true, hashes);
+    public static boolean enabled(JsonObject auth, List<String> errors) {
+        if (auth == null) return true;
         JsonElement local = auth.get("local");
-        if (local != null && !local.isJsonNull()) {
-            if (!local.isJsonObject()) {
-                errors.add("auth.local must be an object");
-            } else {
-                JsonElement value = local.getAsJsonObject().get("enabled");
-                if (value != null && !value.isJsonNull()) {
-                    if (value instanceof JsonPrimitive p && p.isBoolean()) {
-                        enabled = p.getAsBoolean();
-                    } else {
-                        errors.add("auth.local.enabled must be true or false");
-                    }
-                }
-            }
+        if (local == null || local.isJsonNull()) return true;
+        if (!local.isJsonObject()) {
+            errors.add("auth.local must be an object");
+            return true;
         }
-        JsonElement users = auth.get("users");
-        if (users == null || users.isJsonNull()) return new Settings(enabled, hashes);
-        if (!users.isJsonArray()) {
-            errors.add("auth.users must be an array");
-            return new Settings(enabled, hashes);
+        for (String key : local.getAsJsonObject().keySet()) {
+            if (!key.equals("enabled")) errors.add("auth.local: unknown key \"" + key + "\"");
         }
-        JsonArray list = users.getAsJsonArray();
-        for (int i = 0; i < list.size(); i++) {
-            String path = "auth.users[" + i + "]";
-            if (!list.get(i).isJsonObject()) {
-                errors.add(path + " must be an object");
-                continue;
-            }
-            JsonObject user = list.get(i).getAsJsonObject();
-            String id = string(user, "id");
-            if (id == null || id.isEmpty()) {
-                errors.add(path + ": id must be a non-empty string");
-                continue;
-            }
-            path += " \"" + id + "\"";
-            JsonElement password = user.get("password");
-            if (password == null || password.isJsonNull()) continue;
-            String hash = string(user, "password");
-            if (hash == null) {
-                errors.add(path + ": password must be a string");
-                continue;
-            }
-            try {
-                PasswordHasher.parse(hash);
-            } catch (IllegalArgumentException e) {
-                errors.add(path + ": " + e.getMessage());
-                continue;
-            }
-            JsonElement disabled = user.get("disabled");
-            boolean isDisabled = disabled instanceof JsonPrimitive p && p.isBoolean() && p.getAsBoolean();
-            if (!isDisabled) {
-                hashes.putIfAbsent(id, hash); // unique ids are checked with the full user model
-            }
-        }
-        return new Settings(enabled, hashes);
+        JsonElement value = local.getAsJsonObject().get("enabled");
+        if (value == null || value.isJsonNull()) return true;
+        if (value instanceof JsonPrimitive p && p.isBoolean()) return p.getAsBoolean();
+        errors.add("auth.local.enabled must be true or false");
+        return true;
     }
 
-    /** {@link #settings(JsonObject, List)} that throws on the first problem. */
-    public static Settings settings(JsonObject auth) {
+    /** {@link #enabled(JsonObject, List)} that throws on a problem. */
+    public static boolean enabled(JsonObject auth) {
         List<String> errors = new ArrayList<>();
-        Settings settings = settings(auth, errors);
+        boolean enabled = enabled(auth, errors);
         if (!errors.isEmpty()) throw new IllegalArgumentException(String.join("; ", errors));
-        return settings;
-    }
-
-    private static String string(JsonObject object, String key) {
-        JsonElement value = object.get(key);
-        return value instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;
+        return enabled;
     }
 }

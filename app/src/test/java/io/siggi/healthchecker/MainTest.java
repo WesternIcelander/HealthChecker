@@ -129,6 +129,21 @@ class MainTest {
     }
 
     @Test
+    void runRejectsUnknownPermissionsAndRoles(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("config.json");
+        Files.writeString(config, """
+                { "plugins": { "dir": "%s" }, "auth": {
+                    "roles": { "ops": ["view.private", "maintenance.mange"] },
+                    "users": [ { "id": "jane", "role": "operator" } ] } }
+                """.formatted(json(dir.resolve("plugins"))));
+        assertEquals(Main.EXIT_ERROR, execute("run", config.toString()));
+        String errText = errBytes.toString(StandardCharsets.UTF_8);
+        assertTrue(errText.contains("2 configuration errors"), errText);
+        assertTrue(errText.contains("auth.roles.\"ops\"[1]: unknown permission \"maintenance.mange\""), errText);
+        assertTrue(errText.contains("auth.users[0] \"jane\": unknown role \"operator\""), errText);
+    }
+
+    @Test
     void runReportsMissingFile(@TempDir Path dir) {
         assertEquals(Main.EXIT_ERROR, execute("run", dir.resolve("missing.json").toString()));
         assertTrue(errBytes.toString(StandardCharsets.UTF_8).contains("file not found"));

@@ -129,7 +129,7 @@ public final class StatusPage {
         Model model = found.get();
         Site site = model.site();
         StringBuilder html = new StringBuilder(16384);
-        PageSupport.head(html, site, site.title(), true);
+        PageSupport.head(html, site, site.title(), true, model.viewer());
         String overall = stateId(model.overall());
         html.append("<p class=\"banner banner-").append(overall).append("\" role=\"status\">")
                 .append("<span class=\"dot state-").append(overall).append("\" aria-hidden=\"true\"></span>")

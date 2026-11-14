@@ -1,10 +1,15 @@
 package io.siggi.healthchecker.config;
 
+import io.siggi.healthchecker.auth.LocalLogin;
+import io.siggi.healthchecker.auth.PasswordHasher;
+import io.siggi.healthchecker.auth.UserDirectory;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -42,5 +47,16 @@ class ExampleConfigTest {
         assertEquals(2, config.sites().size());
         assertEquals(ZoneId.of("Atlantic/Reykjavik"), config.timezone());
         assertFalse(config.notificationChannels().isEmpty());
+
+        // Users and roles (validated by the auth module at startup), with a real hash for the password variable.
+        String hash = new PasswordHasher().hash("example".toCharArray());
+        config = new ConfigLoader(name -> name.equals("ADMIN_PASSWORD_HASH") ? hash : "dummy-" + name,
+                ZoneId.of("UTC")).load(file);
+        List<String> errors = new ArrayList<>();
+        UserDirectory users = UserDirectory.parse(config.auth(), errors);
+        LocalLogin.enabled(config.auth(), errors);
+        assertEquals(List.of(), errors);
+        assertFalse(users.users().isEmpty());
+        assertTrue(users.roles().containsKey("ops"));
     }
 }

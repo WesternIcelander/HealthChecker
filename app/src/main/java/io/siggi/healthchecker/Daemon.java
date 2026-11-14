@@ -3,7 +3,9 @@ package io.siggi.healthchecker;
 import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.LoginRateLimiter;
+import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
+import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.history.HistoryStore;
@@ -21,7 +23,6 @@ import io.siggi.healthchecker.web.page.LoginPage;
 import io.siggi.healthchecker.web.page.ServicePage;
 import io.siggi.healthchecker.web.page.StatusPage;
 import io.siggi.healthchecker.web.site.SiteResolver;
-import io.siggi.healthchecker.web.view.Viewer;
 
 import java.io.IOException;
 import java.time.Clock;
@@ -30,7 +31,7 @@ import java.util.concurrent.CountDownLatch;
 /**
  * The running service: endpoints from the config checked by the scheduler, results recorded
  * in the status registry and the history, and the dashboard served by the web server.
- * Sign-in works; pages still show every viewer the anonymous view until users and roles exist (M9).
+ * Signed-in users see what their role's permissions allow; users and roles are read once at startup.
  */
 final class Daemon implements AutoCloseable {
     private final HistoryStore history;
@@ -63,19 +64,19 @@ final class Daemon implements AutoCloseable {
         LayoutStore layout = new LayoutStore(config.dataDir());
         layout.load();
         web = new WebServer(config.server());
-        // Users, roles and the logged-in viewer come with the next M9 step; until then every viewer is anonymous.
         sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
                 web.trustedProxies());
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
-        LocalLogin.Settings localSettings = LocalLogin.settings(config.auth());
-        new LoginPage(sites, sessions,
-                new LocalLogin(localSettings.enabled(), localSettings.credentials(), new LoginRateLimiter()),
+        UserDirectory users = UserDirectory.parse(config.auth());
+        Permissions permissions = new Permissions(sessions, users::user);
+        new LoginPage(sites, sessions, permissions,
+                new LocalLogin(LocalLogin.enabled(config.auth()), users.credentials(), new LoginRateLimiter()),
                 web.trustedProxies()).register(web);
         new StatusPage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
-                registry::get, status::status, request -> Viewer.ANONYMOUS, uptime, config.dashboard())
+                registry::get, status::status, permissions::viewer, uptime, config.dashboard())
                 .register(web);
         new ServicePage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
-                registry::get, status::status, request -> Viewer.ANONYMOUS, uptime, history, clock,
+                registry::get, status::status, permissions::viewer, uptime, history, clock,
                 config.dashboard()).register(web);
     }
 
