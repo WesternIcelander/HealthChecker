@@ -355,8 +355,30 @@
     });
   }
 
+  // ---- event edits ----
+  // Buttons with data-confirm ask before submitting (e.g. deleting a note). After an edit the
+  // list view returns to #event-{id} or #note-{id}: open the <details> around it.
+
+  function initEventEdits() {
+    document.addEventListener("click", function (event) {
+      var button = event.target.closest && event.target.closest("button[data-confirm]");
+      if (button && !window.confirm(button.getAttribute("data-confirm"))) event.preventDefault();
+    });
+    var id = window.location.hash.slice(1);
+    var target = id && document.getElementById(decodeURIComponent(id));
+    if (!target) return;
+    for (var el = target; el; el = el.parentElement) {
+      if (el.tagName === "DETAILS" && !el.classList.contains("note-edit")) el.open = true;
+    }
+    if (target.tagName === "LI" && target.firstElementChild && target.firstElementChild.tagName === "DETAILS") {
+      target.firstElementChild.open = true;
+    }
+    target.scrollIntoView();
+  }
+
   function init() {
     document.documentElement.classList.add("js");
+    initEventEdits();
     initTooltips();
     initDayPopover();
     initLayoutEditor();

@@ -638,3 +638,32 @@ h2.day-title { font-size: 1.4rem; }
   cursor: pointer;
 }
 .rename-help { flex-basis: 100%; }
+
+.note-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 6px; font-size: 0.85rem; }
+.note-actions form { margin: 0; }
+.note-edit[open] { flex-basis: 100%; order: 1; }
+.note-edit summary, .note-add summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.note-add { margin: 8px 0; }
+.note-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 0.9rem; }
+.note-form label { font-weight: 600; }
+.note-form textarea, .note-form select {
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.note-form textarea { resize: vertical; min-height: 4em; }
+.note-form button, .note-toggle button, .note-delete button {
+  font: inherit;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}

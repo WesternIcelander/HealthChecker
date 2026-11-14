@@ -1084,7 +1084,7 @@ test list are build, docs or manual steps.
 ### M10 — Dashboard editing: layout, event titles & notes
 - [x] Layout editor on the main page (drag and drop plus up/down buttons and category dropdown; private services with visibility markers) and `POST /admin/layout` (CSRF, version check → 409, "Reset to config order", atomic write). **Tests:** save and reload; move service between categories; reorder categories incl. "Other"; conflicting save gets 409; no `layout.edit` → 403; unknown ids rejected; reset restores config order.
 - [x] Rename event (empty = reset to default). **Tests:** rename visible publicly; reset; no `events.annotate` → 403.
-- [ ] Notes: add / edit / delete; public/private toggle; author and timestamps; length limit; forms in list view, event page and day popover; all POST + CSRF; persisted before responding. **Tests:** private note hidden from anonymous in HTML and JSON; edits survive restart; HTML escaping of note text; length limit.
+- [x] Notes: add / edit / delete; public/private toggle; author and timestamps; length limit; forms in list view, event page and day popover; all POST + CSRF; persisted before responding. **Tests:** private note hidden from anonymous in HTML and JSON; edits survive restart; HTML escaping of note text; length limit.
 
 ### M11 — Endpoint & category management in the dashboard
 - [ ] `EndpointStore`: merge `config.json` (read-only) and `data/endpoints.json` (editable); duplicate-id startup error; disabled entries for ones failing validation; versioned atomic writes. **Tests:** merge; duplicate id error; disabled entry when its plugin is missing; stale-version write → 409.
@@ -1537,3 +1537,18 @@ them; see CLAUDE.md.
   view and on the permalink page to users with `events.annotate`, prefilled with the stored custom title (also for
   users without `view.private`, who may rename anyway) and the default title as placeholder; the list returns to the
   same page and event. The audit entry comes with `AuditLog` (M11).
+- Event notes (app, `web.page.EventEditor`, routed by `ServicePage`; `HistoryStore.addNote` / `editNote` /
+  `deleteNote`, which share the rename's write-then-undo-on-failure path): plain form POSTs with `csrf` and `next` to
+  `/service/{id}/event/{eventId}/notes` (add: `text`, `visibility`, default `private`),
+  `.../note/{noteId}` (edit: optional `text` and `visibility`, a missing field is kept, so the "Make public/private"
+  toggle is a form with only `visibility`) and `.../note/{noteId}/delete`. Order of checks as for the rename: the
+  service page's `404` rules (also for the note: unknown, or not visible to the viewer, so a user with
+  `events.annotate` but without `view.private` can't edit, toggle or delete private notes they can't see, but may add
+  notes of either visibility), then `events.annotate`, then CSRF. Text: `\r\n`/`\r` become `\n`, surrounding
+  whitespace is stripped; empty, more than 10 000 characters (code points) or a control character other than newline
+  and tab is `400`; an unknown visibility is `400`. The author is the user's display name and stays unchanged when
+  someone else edits the note; `editedAt` is set only when the text changes (not on a visibility toggle). Without
+  `next` the redirect goes to the event permalink (`#note-{id}`). Forms appear for users with `events.annotate` in the
+  list view, on the permalink page and in the day details (day page, `?day=` panel and popover, which return to
+  `?day={date}`); `app.js` asks before deleting (`data-confirm`) and opens the event's `<details>` for an
+  `#event-`/`#note-` fragment. The audit entry comes with `AuditLog` (M11).

@@ -32,6 +32,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -350,12 +351,83 @@ public final class HistoryStore implements AutoCloseable {
      * @throws IOException if the events file couldn't be written
      */
     public synchronized Optional<HistoryEvent> rename(String endpointId, String eventId, String title) throws IOException {
+        return update(endpointId, eventId, e -> e.withTitle(title));
+    }
+
+    /**
+     * Adds a note to an event and writes its events file before returning (see {@link #rename}).
+     * The note gets a new id and {@code createdAt} = now.
+     *
+     * @return the new note, or empty when the endpoint has no event with that id
+     * @throws IOException if the events file couldn't be written
+     */
+    public synchronized Optional<EventNote> addNote(String endpointId, String eventId, String author, String text,
+                                                    EventNote.Visibility visibility) throws IOException {
+        EventNote note = new EventNote(UUID.randomUUID().toString(), author, clock.instant(), null, text, visibility);
+        return update(endpointId, eventId, e -> {
+            List<EventNote> notes = new ArrayList<>(e.notes());
+            notes.add(note);
+            return e.withNotes(notes);
+        }).map(e -> note);
+    }
+
+    /**
+     * Changes a note's text and/or visibility ({@code null} keeps it) and writes the events file
+     * before returning (see {@link #rename}). {@code editedAt} is set to now when the text changes.
+     *
+     * @return the updated note, or empty when there's no such event or note
+     * @throws IOException if the events file couldn't be written
+     */
+    public synchronized Optional<EventNote> editNote(String endpointId, String eventId, String noteId, String text,
+                                                     EventNote.Visibility visibility) throws IOException {
+        EventNote[] result = new EventNote[1];
+        Instant now = clock.instant();
+        update(endpointId, eventId, e -> {
+            List<EventNote> notes = new ArrayList<>(e.notes());
+            for (int i = 0; i < notes.size(); i++) {
+                EventNote n = notes.get(i);
+                if (!n.id().equals(noteId)) continue;
+                boolean textChanged = text != null && !text.equals(n.text());
+                EventNote updated = new EventNote(n.id(), n.author(), n.createdAt(), textChanged ? now : n.editedAt(),
+                        textChanged ? text : n.text(), visibility != null ? visibility : n.visibility());
+                notes.set(i, updated);
+                result[0] = updated;
+                return e.withNotes(notes);
+            }
+            return null;
+        });
+        return Optional.ofNullable(result[0]);
+    }
+
+    /**
+     * Deletes a note and writes the events file before returning (see {@link #rename}).
+     *
+     * @return whether there was such a note
+     * @throws IOException if the events file couldn't be written
+     */
+    public synchronized boolean deleteNote(String endpointId, String eventId, String noteId) throws IOException {
+        return update(endpointId, eventId, e -> {
+            List<EventNote> notes = new ArrayList<>(e.notes());
+            return notes.removeIf(n -> n.id().equals(noteId)) ? e.withNotes(notes) : null;
+        }).isPresent();
+    }
+
+    /**
+     * Applies {@code change} to an event (a {@code null} result means "nothing to change") and
+     * writes the event's year file before returning. On a write error the change is undone and the
+     * error thrown.
+     */
+    private Optional<HistoryEvent> update(String endpointId, String eventId, UnaryOperator<HistoryEvent> change)
+            throws IOException {
         EndpointHistory h = histories.get(endpointId);
         HistoryEvent old = h == null ? null : h.find(eventId);
         if (old == null) {
             return Optional.empty();
         }
-        HistoryEvent updated = old.withTitle(title);
+        HistoryEvent updated = change.apply(old);
+        if (updated == null) {
+            return Optional.empty();
+        }
         h.replace(updated);
         int year = yearOf(updated.start());
         try {

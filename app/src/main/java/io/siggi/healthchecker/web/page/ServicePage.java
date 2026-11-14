@@ -437,12 +437,41 @@ public final class ServicePage {
             eventPage(request, parts[0], parts[2]);
         } else if (parts.length == 3 && parts[1].equals("day")) {
             dayPage(request, parts[0], parts[2]);
-        } else if (parts.length == 4 && parts[1].equals("event") && parts[3].equals("title") && editor != null) {
-            Optional<Service> found = service(request, parts[0]);
-            if (found.isEmpty() || event(found.get(), parts[2]).isEmpty()) return; // nothing written → 404
-            editor.rename(request, found.get(), parts[2]);
+        } else if (parts.length >= 4 && parts[1].equals("event") && editor != null) {
+            editPost(request, parts);
         }
         // Anything else: nothing written → 404.
+    }
+
+    /**
+     * The event edit POSTs under {@code /service/{id}/event/{eventId}/}: {@code title},
+     * {@code notes}, {@code note/{noteId}} and {@code note/{noteId}/delete}. The service, event and
+     * note must be visible to the viewer, else {@code 404}.
+     */
+    private void editPost(HTTPRequest request, String[] parts) throws Exception {
+        String eventId = parts[2];
+        boolean title = parts.length == 4 && parts[3].equals("title");
+        boolean add = parts.length == 4 && parts[3].equals("notes");
+        boolean edit = parts.length == 5 && parts[3].equals("note");
+        boolean delete = parts.length == 6 && parts[3].equals("note") && parts[5].equals("delete");
+        if (!title && !add && !edit && !delete) return; // nothing written → 404
+        Optional<Service> found = service(request, parts[0]);
+        if (found.isEmpty()) return;
+        Optional<EventView> event = event(found.get(), eventId);
+        if (event.isEmpty()) return;
+        if (title) {
+            editor.rename(request, found.get(), eventId);
+        } else if (add) {
+            editor.addNote(request, found.get(), eventId);
+        } else {
+            String noteId = parts[4];
+            if (event.get().notes().stream().noneMatch(n -> n.id().equals(noteId))) return;
+            if (edit) {
+                editor.editNote(request, found.get(), eventId, noteId);
+            } else {
+                editor.deleteNote(request, found.get(), eventId, noteId);
+            }
+        }
     }
 
     private void servicePage(HTTPRequest request, String id) throws Exception {
@@ -507,7 +536,7 @@ public final class ServicePage {
                     service.viewer().csrfToken(), PREFIX + service.view().id() + "/event/" + e.id());
         }
         html.append("<h3 class=\"notes-title\">Notes</h3>\n");
-        notesHtml(html, e.notes());
+        notesHtml(html, service, e, PREFIX + service.view().id() + "/event/" + e.id());
         html.append("</article>\n");
         PageSupport.foot(html, site);
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
@@ -589,7 +618,8 @@ public final class ServicePage {
                             .append(e.ongoing() ? "ongoing" : timeTag(e.end())).append(", ")
                             .append(Durations.format(e.duration(now))).append("</p>\n");
                 }
-                notesHtml(html, e.notes());
+                // Back to the calendar with this day open (the popover, or the panel without JS).
+                notesHtml(html, service, e, servicePath + "?day=" + detail.date());
                 html.append("</li>\n");
             }
             html.append("</ol>\n");
@@ -708,7 +738,7 @@ public final class ServicePage {
                 editor.renameForm(html, site, service.endpoint().id(), service.endpoint().name(), e.id(),
                         service.viewer().csrfToken(), servicePath + "?view=list&page=" + page.page() + "#event-" + e.id());
             }
-            notesHtml(html, e.notes());
+            notesHtml(html, service, e, servicePath + "?view=list&page=" + page.page() + "#event-" + e.id());
             html.append("<p class=\"event-link\"><a href=\"")
                     .append(Html.escape(site.link(servicePath + "/event/" + e.id()))).append("\">Permalink</a></p>\n")
                     .append("</div>\n</details>\n</li>\n");
@@ -751,27 +781,40 @@ public final class ServicePage {
         }
     }
 
-    /** The visible notes, oldest first; the text is escaped and keeps its newlines (via CSS). */
-    private void notesHtml(StringBuilder html, List<NoteView> notes) {
+    /**
+     * The visible notes, oldest first; the text is escaped and keeps its newlines (via CSS). For
+     * viewers who may annotate, each note has edit, toggle and delete forms, and there's a form to
+     * add one, all returning to {@code next}.
+     */
+    private void notesHtml(StringBuilder html, Service service, EventView e, String next) {
+        List<NoteView> notes = e.notes();
+        String csrf = service.viewer().csrfToken();
         if (notes.isEmpty()) {
             html.append("<p class=\"muted notes-empty\">No notes.</p>\n");
-            return;
-        }
-        html.append("<ul class=\"notes\">\n");
-        for (NoteView note : notes) {
-            html.append("<li class=\"note\" id=\"note-").append(Html.escape(note.id())).append("\">")
-                    .append("<p class=\"note-meta\"><span class=\"note-author\">").append(Html.escape(note.author()))
-                    .append("</span> · ").append(timeTag(note.createdAt()));
-            if (note.editedAt() != null) {
-                html.append(" <span class=\"muted\">(edited ").append(timeTag(note.editedAt())).append(")</span>");
+        } else {
+            html.append("<ul class=\"notes\">\n");
+            for (NoteView note : notes) {
+                html.append("<li class=\"note\" id=\"note-").append(Html.escape(note.id())).append("\">")
+                        .append("<p class=\"note-meta\"><span class=\"note-author\">").append(Html.escape(note.author()))
+                        .append("</span> · ").append(timeTag(note.createdAt()));
+                if (note.editedAt() != null) {
+                    html.append(" <span class=\"muted\">(edited ").append(timeTag(note.editedAt())).append(")</span>");
+                }
+                if (note.visibility() != null) {
+                    String vis = note.visibility() == EventNote.Visibility.PRIVATE ? "private" : "public";
+                    html.append(" <span class=\"badge badge-").append(vis).append("\">").append(vis).append("</span>");
+                }
+                html.append("</p>\n<p class=\"note-text\">").append(Html.escape(note.text())).append("</p>\n");
+                if (service.annotate()) {
+                    editor.noteForms(html, service.site(), service.endpoint().id(), e.id(), note, csrf, next);
+                }
+                html.append("</li>\n");
             }
-            if (note.visibility() != null) {
-                String vis = note.visibility() == EventNote.Visibility.PRIVATE ? "private" : "public";
-                html.append(" <span class=\"badge badge-").append(vis).append("\">").append(vis).append("</span>");
-            }
-            html.append("</p>\n<p class=\"note-text\">").append(Html.escape(note.text())).append("</p></li>\n");
+            html.append("</ul>\n");
         }
-        html.append("</ul>\n");
+        if (service.annotate()) {
+            editor.addNoteForm(html, service.site(), service.endpoint().id(), e.id(), csrf, next);
+        }
     }
 
     /** A {@code <time>} element: the UTC instant as {@code datetime}, the local time as text. */

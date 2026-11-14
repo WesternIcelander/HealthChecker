@@ -64,6 +64,11 @@ public record HistoryEvent(String id, String endpointId, Kind kind, Instant star
                 lastFailureAt, notes, endedUnobserved, endedByConfigChange, maintenanceId);
     }
 
+    HistoryEvent withNotes(List<EventNote> newNotes) {
+        return new HistoryEvent(id, endpointId, kind, start, end, title, firstFailureMessage, lastFailureMessage,
+                lastFailureAt, newNotes, endedUnobserved, endedByConfigChange, maintenanceId);
+    }
+
     HistoryEvent closed(Instant at, boolean unobserved) {
         Instant closeAt = at.isBefore(start) ? start : at;
         return new HistoryEvent(id, endpointId, kind, start, closeAt, title, firstFailureMessage, lastFailureMessage,
