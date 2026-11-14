@@ -1,0 +1,49 @@
+/* HealthChecker dashboard: one small stylesheet, light and dark via prefers-color-scheme. */
+:root {
+  --bg: #ffffff;
+  --fg: #1d2129;
+  --muted: #5f6672;
+  --border: #dde1e6;
+  --surface: #f6f7f9;
+  --link: #0b62d6;
+  --up: #1f9d55;
+  --degraded-yellow: #d4b106;
+  --degraded-orange: #e07b00;
+  --down: #d93025;
+  --maintenance: #3b82f6;
+  --nodata: #c3c8cf;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --fg: #e6e8eb;
+    --muted: #9aa2ad;
+    --border: #2c323a;
+    --surface: #1c2027;
+    --link: #6aa8ff;
+    --nodata: #3a414b;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: var(--link); }
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.muted { color: var(--muted); }

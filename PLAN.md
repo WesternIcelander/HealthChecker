@@ -1055,7 +1055,7 @@ test list are build, docs or manual steps.
 - [x] `UptimeCalculator`: exact downtime ∩ coverage for 24 h, 60 d and any day in the configured timezone; "no data" handling; never round up to 100 %; per-day cache. **Tests:** event across midnight split between days; DST transition day (23 h / 25 h); no-coverage days; partial coverage; rounding (99.995 % → 99.99 %); cache invalidated on event change.
 
 ### M6 — Public main page & status API
-- [ ] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
+- [x] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
 - [ ] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
 - [ ] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
 - [ ] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
@@ -1285,3 +1285,19 @@ them; see CLAUDE.md.
   midnight may be recorded after it); an endpoint's cache is dropped (by generation counter, so an
   in-flight computation can't store a stale entry) when one of its events opens or closes, or via
   `invalidate(id)`. `run` doesn't create it yet; the web server does.
+- `WebServer` (app, package `web`): a SiggiHTTP `HTTPServer` from `HTTPServerBuilder` (virtual-thread
+  executor) fed by HealthChecker's own platform accept thread (`HealthChecker-HTTP`) on `bind:port`,
+  since SiggiHTTP's port-based constructors and `listen()` are deprecated. `close()` stops accepting.
+  Built-in routes: `GET /health` (200, `text/plain` `ok`, `no-store`) and `/static/{style.css,app.js}`
+  from classpath resources (allow-listed names, `Cache-Control: public, max-age=3600`); anything else
+  under `/static/` is 404. `run` doesn't start the web server yet; it's started with the scheduler
+  and shutdown handling.
+- `server.trustedProxies` entries are IP addresses or CIDR ranges (IPv4 or IPv6, literals only, no DNS),
+  validated at config load; an empty list trusts nobody. SiggiHTTP always trusts loopback and
+  Cloudflare for `X-Forwarded-For`/`-Proto`, so `request.getIPAddress()` and `request.isSecure()` are
+  not used: `TrustedProxies` starts from the socket peer (`getNextHopAddress()`) and, while the
+  current hop is trusted, walks `X-Forwarded-For` (all header lines, comma-separated) from the right;
+  it stops at the first untrusted hop or at an entry that isn't an IP literal (then the last trusted
+  hop is the client). HTTPS = the nearest (last) `X-Forwarded-Proto` entry from a trusted peer is
+  `https`, since HealthChecker never terminates TLS itself. SiggiHTTP's own trusted list is narrowed
+  from its private-range defaults to the configured proxies.

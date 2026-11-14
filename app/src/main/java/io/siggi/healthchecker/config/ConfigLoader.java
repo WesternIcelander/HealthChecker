@@ -156,6 +156,15 @@ public final class ConfigLoader {
             }
             String publicBaseUrl = baseUrl(s, "publicBaseUrl");
             List<String> proxies = s.stringList("trustedProxies");
+            if (proxies != null) {
+                for (int i = 0; i < proxies.size(); i++) {
+                    try {
+                        IpRange.parse(proxies.get(i));
+                    } catch (IllegalArgumentException e) {
+                        s.problems.error(s.path("trustedProxies") + "[" + i + "]", e.getMessage());
+                    }
+                }
+            }
             String unknownHostsName = s.string("unknownHosts", "default");
             UnknownHostsPolicy unknownHosts = switch (unknownHostsName) {
                 case "default" -> UnknownHostsPolicy.DEFAULT;

@@ -299,6 +299,10 @@ class ConfigLoaderTest {
                 "server.publicBaseUrl: must be an http or https URL");
         assertSingleError("{ \"server\": { \"trustedProxies\": \"127.0.0.1\" } }",
                 "server.trustedProxies: must be an array of strings");
+        assertSingleError("{ \"server\": { \"trustedProxies\": [\"10.0.0.0/8\", \"proxy.example\"] } }",
+                "server.trustedProxies[1]: not an IP address or CIDR range: \"proxy.example\"");
+        assertSingleError("{ \"server\": { \"trustedProxies\": [\"10.0.0.0/40\"] } }",
+                "server.trustedProxies[0]: prefix length in \"10.0.0.0/40\" must be at most 32");
         assertSingleError("{ \"server\": { \"unknownHosts\": \"drop\" } }",
                 "server.unknownHosts: must be \"default\" or \"reject\"");
         assertSingleError("{ \"server\": 8080 }", "server: must be an object");
