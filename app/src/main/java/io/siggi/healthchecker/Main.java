@@ -11,6 +11,7 @@ import io.siggi.healthchecker.config.ConfigLoadException;
 import io.siggi.healthchecker.config.ConfigLoader;
 import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryStore;
+import io.siggi.healthchecker.notify.NotificationConfig;
 import io.siggi.healthchecker.plugin.PluginLoadException;
 import io.siggi.healthchecker.plugin.PluginManager;
 
@@ -122,6 +123,7 @@ public final class Main {
             UserDirectory.parse(config.auth(), endpointErrors);
             List<String> authWarnings = new java.util.ArrayList<>();
             AuthProviders.parse(config.auth(), config.server(), config.sites(), endpointErrors, authWarnings);
+            NotificationConfig.parse(config.notifications(), endpointErrors, authWarnings);
             printWarnings(authWarnings, err);
             if (!endpointErrors.isEmpty()) {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());

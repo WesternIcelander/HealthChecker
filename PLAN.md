@@ -1111,7 +1111,7 @@ test list are build, docs or manual steps.
 ### M14 — Notifications: framework, reminders & Discord
 - [x] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
 - [x] Reminders: schedule from outage start per `reminders` (+ optional `reminderRepeatMinutes`); cancel on recovery; persisted in `data/notifications/state.json`; overdue-after-restart sent once. **Tests:** with a fake clock: reminders at 30/60/120 and none after; none after recovery; repeat interval; restart mid-outage sends the overdue one once.
-- [ ] `DiscordNotifier`: embeds (down/reminder/recovered), splitting, `allowed_mentions`, 429 handling; "Send test notification" (`notifications.test`). **Tests:** fake webhook server: payload shape; >10 embeds split; mention only on down/reminder; 429 then success; 4xx permanent; test button requires permission.
+- [x] `DiscordNotifier`: embeds (down/reminder/recovered), splitting, `allowed_mentions`, 429 handling; "Send test notification" (`notifications.test`). **Tests:** fake webhook server: payload shape; >10 embeds split; mention only on down/reminder; 429 then success; 4xx permanent; test button requires permission.
 - [ ] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
 
 ### M15 — Email via SimpleMailer
@@ -1880,3 +1880,34 @@ them; see CLAUDE.md.
   instead of starting over. Like the dispatcher, the `StatusRegistry` listener, the `cancel(id)` on endpoint removal or
   replacement (`endedByConfigChange`) and the `Daemon` wiring come with `DiscordNotifier`. Reminders are sent with
   `NotificationDispatcher.notify`, so they follow the endpoint's routing and batching.
+- Channels and `DiscordNotifier` (app, `notify.NotificationConfig`, `notify.DiscordNotifier`): `notifications` keys are
+  `batchSeconds` (whole number 0–3600, default 30; 0 sends at once) and `channels`; unknown keys are errors. A channel
+  needs `type` `discord` or `email`. `discord` keys: `webhookUrl` (required; https, or http on localhost; no credentials
+  or fragment; a query such as `thread_id` is kept), `username` (1–80 characters; not containing "discord"/"clyde",
+  which Discord rejects) and `mention` (role `<@&id>`, user `<@id>`/`<@!id>`, `@everyone`, `@here`, several separated by
+  spaces). `email` channels are accepted with a startup warning and fail permanently until M15. `run` reports these with
+  the other configuration errors; error messages never echo the webhook URL. Embeds: title "{name} is down" (red) /
+  "is still down" (orange) / "recovered" (green), "Test notification" (grey), announcements blue; the description has
+  "Down since" / "Down for 1h, since" / "Back up after 2h 14m" with Discord `<t:…:f>` timestamps (shown in each reader's
+  timezone) and "Latest failure: …"; `timestamp` is the notification time and `url` the event permalink (only when
+  absolute). Names and messages are markdown-escaped and truncated (title 256, message 1000). A message holds at most
+  10 embeds and 6000 characters of embed text; bigger batches are split in order, and a retry of the same batch
+  continues with the part that failed (the notifier remembers how many parts of that batch id were accepted), so no
+  part is posted twice. The mention is the content of the first message with a down or reminder embed only;
+  `allowed_mentions` is on every message (`parse: []` plus exactly the configured roles/users, `everyone` only when
+  configured), so nothing else in a message can ping. `2xx` success; `429` → retry after the body's `retry_after`
+  (else the `Retry-After` header), used when longer than the backoff; `5xx`, timeouts and connection failures → retry;
+  other statuses permanent with Discord's `code`/`message` in the error. 10 s timeouts, no redirects.
+- Notification wiring (`Daemon`): the scheduler's check listener records history first, then turns a `StateChange` into
+  a down/recovered notification (`Notification.forChange`) for the endpoint's routing and feeds `ReminderScheduler`;
+  links use `SiteResolver.siteFor` with the effective layout and point at the event the change opened (down) or closed
+  (recovered), or are left out without a public base URL. Reminder targets read the open event's last failure message
+  and permalink. `stopped` (removed/replaced) cancels reminders; an in-place update re-plans them on a virtual thread
+  (registry listeners hold locks the planning also takes). Reminders are loaded after the history heartbeat starts;
+  `close()` stops reminders and the dispatcher after the scheduler.
+- "Send test notification" (`web.page.NotificationsPage`): `GET /admin/notifications` lists channels (name, type) with a
+  test button each; last delivery, last error and pending count only with `view.private` (channel errors are private).
+  `POST /admin/notify-test` (`channel`, `csrf`): `notifications.test` (anonymous → `/login`, else `403`), then CSRF, then
+  an unknown channel is `400`; 5 tests per user per minute (`429` + `Retry-After`). It queues the test with
+  `NotificationDispatcher.sendNow` (its own batch, no batch window, same retry rules), then `303` to the list with a
+  "queued" notice. The main page shows a "Notifications" link to users with `notifications.test`. Tests aren't audited.

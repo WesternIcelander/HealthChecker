@@ -4,6 +4,7 @@ import io.siggi.healthchecker.auth.AuthProviders;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.auth.UserDirectory;
+import io.siggi.healthchecker.notify.NotificationConfig;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -63,5 +64,14 @@ class ExampleConfigTest {
         assertEquals(2, providers.providers().size());
         assertFalse(users.users().isEmpty());
         assertTrue(users.roles().containsKey("ops"));
+
+        // Notification channels (validated by the notify module at startup), with webhook URLs for the variables.
+        config = new ConfigLoader(name -> name.endsWith("DISCORD_WEBHOOK")
+                ? "https://discord.com/api/webhooks/1/dummy" : "dummy-" + name, ZoneId.of("UTC")).load(file);
+        List<String> notifyErrors = new ArrayList<>();
+        List<String> notifyWarnings = new ArrayList<>();
+        NotificationConfig notifications = NotificationConfig.parse(config.notifications(), notifyErrors, notifyWarnings);
+        assertEquals(List.of(), notifyErrors);
+        assertEquals(config.notificationChannels(), notifications.channels().keySet());
     }
 }

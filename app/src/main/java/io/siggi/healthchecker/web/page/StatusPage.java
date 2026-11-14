@@ -54,6 +54,7 @@ public final class StatusPage {
     private final LayoutEditor editor;
     private volatile EndpointEditor endpointEditor;
     private volatile AuditPage auditPage;
+    private volatile NotificationsPage notificationsPage;
     private volatile MaintenancePage maintenance;
     private final CategoryGrouping grouping = new CategoryGrouping(new ViewFilter());
 
@@ -95,6 +96,11 @@ public final class StatusPage {
     /** Adds "Add service" and "Manage services" links for users who may use {@code endpointEditor}. */
     public void endpointEditor(EndpointEditor endpointEditor) {
         this.endpointEditor = endpointEditor;
+    }
+
+    /** Adds a "Notifications" link for users who may send test notifications. */
+    public void notificationsPage(NotificationsPage notificationsPage) {
+        this.notificationsPage = notificationsPage;
     }
 
     /** Adds an "Audit log" link for users who may see {@code auditPage}. */
@@ -212,6 +218,11 @@ public final class StatusPage {
             if (auditPage != null && auditPage.canView(request)) {
                 actions.append("<a class=\"button\" href=\"")
                         .append(Html.escape(site.link(AuditPage.PATH))).append("\">Audit log</a>");
+            }
+            NotificationsPage n = notificationsPage;
+            if (n != null && n.canTest(request)) {
+                actions.append(" <a class=\"button\" href=\"")
+                        .append(Html.escape(site.link(NotificationsPage.PATH))).append("\">Notifications</a>");
             }
             if (!actions.isEmpty()) {
                 html.append("<p class=\"page-actions\">").append(actions.toString().strip()).append("</p>\n");

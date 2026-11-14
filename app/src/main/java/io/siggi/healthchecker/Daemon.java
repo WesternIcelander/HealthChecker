@@ -12,10 +12,17 @@ import io.siggi.healthchecker.auth.UserDirectory;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.EndpointStore;
+import io.siggi.healthchecker.history.HistoryEvent;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.UptimeCalculator;
 import io.siggi.healthchecker.maintenance.MaintenanceScheduler;
 import io.siggi.healthchecker.maintenance.MaintenanceStore;
+import io.siggi.healthchecker.notify.DiscordNotifier;
+import io.siggi.healthchecker.notify.Notification;
+import io.siggi.healthchecker.notify.NotificationConfig;
+import io.siggi.healthchecker.notify.NotificationDispatcher;
+import io.siggi.healthchecker.notify.ReminderScheduler;
+import io.siggi.healthchecker.notify.TaskScheduler;
 import io.siggi.healthchecker.plugin.PluginManager;
 import io.siggi.healthchecker.plugin.JsonEndpointConfig;
 import io.siggi.healthchecker.schedule.CheckScheduler;
@@ -23,6 +30,7 @@ import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.schedule.EndpointFactory;
 import io.siggi.healthchecker.schedule.EndpointRegistry;
 import io.siggi.healthchecker.status.CheckRecord;
+import io.siggi.healthchecker.status.State;
 import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
@@ -37,8 +45,10 @@ import io.siggi.healthchecker.web.page.LoginPage;
 import io.siggi.healthchecker.web.page.ProviderLoginPage;
 import io.siggi.healthchecker.web.page.MaintenancePage;
 import io.siggi.healthchecker.web.page.MaintenanceViews;
+import io.siggi.healthchecker.web.page.NotificationsPage;
 import io.siggi.healthchecker.web.page.ServicePage;
 import io.siggi.healthchecker.web.page.StatusPage;
+import io.siggi.healthchecker.web.site.Site;
 import io.siggi.healthchecker.web.site.SiteResolver;
 
 import java.io.IOException;
@@ -67,6 +77,10 @@ final class Daemon implements AutoCloseable {
     private final MaintenanceScheduler maintenanceScheduler;
     private final WebServer web;
     private final SessionManager sessions;
+    private final NotificationDispatcher notifications;
+    private final ReminderScheduler reminders;
+    private final SiteResolver sites;
+    private final LayoutStore layout;
     private final CountDownLatch closed = new CountDownLatch(1);
     private boolean closing;
 
@@ -84,12 +98,19 @@ final class Daemon implements AutoCloseable {
         scheduler.addCheckListener(new CheckScheduler.CheckListener() {
             @Override
             public void checked(String endpointId, CheckRecord check, StateChange change) {
+                String eventBefore = change == null ? null
+                        : history.openEvent(endpointId).map(HistoryEvent::id).orElse(null);
                 history.record(endpointId, check, change);
+                if (change != null) {
+                    notifyChange(change, eventBefore);
+                }
             }
 
             @Override
             public void stopped(String endpointId, CheckScheduler.StopReason reason) {
                 history.stopMonitoring(endpointId, reason == CheckScheduler.StopReason.REPLACED);
+                // A removed or replaced endpoint's outage is over (endedUnobserved / endedByConfigChange).
+                reminders.cancel(endpointId);
             }
         });
         // Remember every target an endpoint has had, so its history stays leak-filtered after edits.
@@ -102,6 +123,10 @@ final class Daemon implements AutoCloseable {
             @Override
             public void updated(Endpoint old, Endpoint now) {
                 rememberTargets(now);
+                // reminders or reminderRepeatMinutes may have changed. Re-planned off this thread: registry
+                // listeners run under the registry (and endpoint store) lock, which planning takes too.
+                String id = now.id();
+                Thread.ofVirtual().name("HealthChecker-reminder-refresh").start(() -> reminders.refresh(id));
             }
 
             @Override
@@ -116,7 +141,7 @@ final class Daemon implements AutoCloseable {
         Function<String, Optional<Endpoint>> lookup =
                 id -> registry.get(id).map(e -> e.withPastTargets(history.knownTargets(id)));
         uptime = new UptimeCalculator(history, config.timezone(), config.maintenance().countsAsDowntime(), clock);
-        LayoutStore layout = new LayoutStore(config.dataDir());
+        layout = new LayoutStore(config.dataDir());
         layout.load();
         AuditLog audit = AuditLog.open(config.dataDir());
         maintenance = new MaintenanceStore(config.dataDir(), config.maintenance(), new MaintenanceStore.References() {
@@ -148,9 +173,17 @@ final class Daemon implements AutoCloseable {
             return categories;
         }, clock);
         web = new WebServer(config.server());
+        sites = SiteResolver.fromConfig(config, web.trustedProxies());
+        NotificationConfig notificationConfig = NotificationConfig.parse(config.notifications());
+        notifications = NotificationDispatcher.create(notificationConfig.notifiers(DiscordNotifier.httpClient()),
+                notificationConfig.batchWindow());
+        reminders = new ReminderScheduler(ReminderScheduler.stateFile(config.dataDir()), id -> registry.get(id)
+                .map(e -> new ReminderScheduler.Target(e.definition(), failureMessage(id),
+                        link(id, history.openEvent(id).map(HistoryEvent::id).orElse(null)))),
+                notifications::notify, TaskScheduler.create(), clock,
+                System.getLogger(ReminderScheduler.class.getName()));
         sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
                 web.trustedProxies());
-        SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
         UserDirectory users = UserDirectory.parse(config.auth());
         Permissions permissions = new Permissions(sessions, users);
         AuthProviders providers = AuthProviders.parse(config.auth(), config.server(), config.sites());
@@ -175,6 +208,10 @@ final class Daemon implements AutoCloseable {
                 lookup, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);
         statusPage.endpointEditor(endpointEditor);
         statusPage.auditPage(auditPage);
+        NotificationsPage notificationsPage = new NotificationsPage(sites, permissions, sessions, notifications,
+                notificationConfig.types(), clock, config.timezone());
+        notificationsPage.register(web);
+        statusPage.notificationsPage(notificationsPage);
         statusPage.register(web);
         ServicePage servicePage = new ServicePage(sites,
                 () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
@@ -214,6 +251,8 @@ final class Daemon implements AutoCloseable {
             }
             daemon.endpoints.addChangeListener(daemon::applyEndpointChanges);
             daemon.history.startHeartbeat();
+            // Pending reminders from before a restart; overdue ones are sent once.
+            daemon.reminders.load();
             // Windows in progress are applied before the first check is recorded.
             daemon.maintenanceScheduler.start();
             daemon.scheduler.start();
@@ -238,6 +277,37 @@ final class Daemon implements AutoCloseable {
                         + " restart: " + e.getMessage()));
     }
 
+    /** Queues the down/recovered notification a state change causes, and starts or cancels reminders. */
+    private void notifyChange(StateChange change, String eventBefore) {
+        String id = change.endpointId();
+        Optional<Endpoint> endpoint = registry.get(id);
+        if (endpoint.isPresent()) {
+            // A recovery links to the event it just closed, a down notification to the one it opened.
+            String eventId = change.to() == State.DOWN
+                    ? history.openEvent(id).map(HistoryEvent::id).orElse(null) : eventBefore;
+            Notification.forChange(endpoint.get().definition(), change, link(id, eventId))
+                    .ifPresent(n -> notifications.notify(endpoint.get().definition(), n));
+        }
+        reminders.onStateChange(change);
+    }
+
+    /** The latest failure message of the endpoint's ongoing outage, else of its last check. */
+    private String failureMessage(String id) {
+        return history.openEvent(id).map(HistoryEvent::lastFailureMessage)
+                .or(() -> status.status(id).map(s -> s.lastCheck()).filter(c -> !c.success()).map(CheckRecord::message))
+                .orElse(null);
+    }
+
+    /**
+     * An absolute link to the event (or the service page without one) on the first site showing the
+     * endpoint; {@code null} without a public base URL, since a relative link is useless in a message.
+     */
+    private String link(String endpointId, String eventId) {
+        Site site = sites.siteFor(endpointId, layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()));
+        String link = site.link("/service/" + endpointId + (eventId == null ? "" : "/event/" + eventId));
+        return link.startsWith("https://") || link.startsWith("http://") ? link : null;
+    }
+
     private void rememberTargets(Endpoint endpoint) {
         List<String> values = new ArrayList<>();
         for (JsonEndpointConfig.Target t : endpoint.targets()) {
@@ -252,6 +322,14 @@ final class Daemon implements AutoCloseable {
 
     MaintenanceStore maintenance() {
         return maintenance;
+    }
+
+    NotificationDispatcher notifications() {
+        return notifications;
+    }
+
+    ReminderScheduler reminders() {
+        return reminders;
     }
 
     StatusRegistry status() {
@@ -289,6 +367,8 @@ final class Daemon implements AutoCloseable {
             web.close();
             maintenanceScheduler.close();
             scheduler.close();
+            reminders.close();
+            notifications.close();
             uptime.close();
             history.close();
         } finally {

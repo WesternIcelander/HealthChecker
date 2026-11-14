@@ -129,6 +129,33 @@ public final class NotificationDispatcher implements AutoCloseable {
         targets.forEach(ch -> enqueue(ch, notification));
     }
 
+    /**
+     * Queues {@code notification} for one channel as a message of its own, without waiting for
+     * the batch window ("Send test notification"). It's delivered and retried like any batch, in
+     * order behind batches already queued.
+     *
+     * @throws IllegalArgumentException if {@code channel} isn't configured
+     */
+    public void sendNow(String channel, Notification notification) {
+        Objects.requireNonNull(notification, "notification");
+        Channel ch = channels.get(channel);
+        if (ch == null) {
+            throw new IllegalArgumentException("unknown notification channel \"" + channel + "\"");
+        }
+        if (closed) {
+            logger.log(Level.WARNING, "Notification dispatcher closed, dropping " + notification.kind()
+                    + " notification for channel " + ch.name);
+            return;
+        }
+        synchronized (ch) {
+            ch.queue.add(new NotificationBatch(UUID.randomUUID(), ch.name, List.of(notification)));
+            if (!ch.sending) {
+                ch.sending = true;
+                scheduler.execute(() -> attempt(ch, 1));
+            }
+        }
+    }
+
     /** Delivery state of a channel, or empty if it isn't configured. */
     public Optional<ChannelStatus> status(String channel) {
         Channel ch = channels.get(channel);
