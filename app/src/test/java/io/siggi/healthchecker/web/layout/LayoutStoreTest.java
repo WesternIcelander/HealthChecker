@@ -199,4 +199,62 @@ class LayoutStoreTest {
             assertTrue(e.getMessage().contains("layout.json"), e.getMessage());
         }
     }
+
+    // ---- saving ----
+
+    @Test
+    void saveWritesNextVersionAndReloads() throws Exception {
+        LayoutStore store = new LayoutStore(dataDir);
+        store.load();
+        SavedLayout saved = store.save(0, List.of(
+                new SavedLayout.Category("_other", List.of("loose", "website")),
+                new SavedLayout.Category("web", List.of("blog"))));
+        assertEquals(1, saved.version());
+        assertEquals(1, store.version());
+
+        LayoutStore reloaded = new LayoutStore(dataDir);
+        reloaded.load();
+        assertEquals(1, reloaded.version());
+        assertEquals(saved, reloaded.saved().orElseThrow());
+        Map<String, List<String>> shape = shape(reloaded.resolve(CATEGORIES, ENDPOINTS));
+        assertEquals(List.of("_other", "web", "minecraft", "internal"), List.copyOf(shape.keySet()));
+        assertEquals(List.of("loose", "website"), shape.get("_other"));
+        assertEquals(List.of("blog"), shape.get("web"));
+    }
+
+    @Test
+    void staleSaveIsAConflictAndChangesNothing() throws Exception {
+        LayoutStore store = new LayoutStore(dataDir);
+        store.load();
+        store.save(0, List.of(new SavedLayout.Category("web", List.of("blog", "website"))));
+        String before = Files.readString(store.file());
+        LayoutStore.VersionConflictException e = assertThrows(LayoutStore.VersionConflictException.class,
+                () -> store.save(0, List.of()));
+        assertEquals(1, e.currentVersion());
+        assertEquals(1, store.version());
+        assertEquals(before, Files.readString(store.file()));
+    }
+
+    @Test
+    void resetKeepsCountingAndResolvesToConfigOrder() throws Exception {
+        LayoutStore store = new LayoutStore(dataDir);
+        store.load();
+        Map<String, List<String>> defaults = shape(store.resolve(CATEGORIES, ENDPOINTS));
+        store.save(0, List.of(new SavedLayout.Category("_other", List.of("website"))));
+        store.save(1, List.of());
+        assertEquals(2, store.version());
+        assertEquals(defaults, shape(store.resolve(CATEGORIES, ENDPOINTS)));
+        assertThrows(LayoutStore.VersionConflictException.class, () -> store.save(0, List.of()));
+    }
+
+    @Test
+    void leftoverTempFilesRemovedAtLoad() throws Exception {
+        Path temp = dataDir.resolve(".layout.json.0123.tmp");
+        Files.writeString(temp, "{");
+        Path other = dataDir.resolve(".other.json.0123.tmp");
+        Files.writeString(other, "{");
+        new LayoutStore(dataDir).load();
+        assertFalse(Files.exists(temp));
+        assertTrue(Files.exists(other));
+    }
 }

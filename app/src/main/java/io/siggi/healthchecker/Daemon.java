@@ -19,6 +19,7 @@ import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.page.LayoutEditor;
 import io.siggi.healthchecker.web.page.LoginPage;
 import io.siggi.healthchecker.web.page.ServicePage;
 import io.siggi.healthchecker.web.page.StatusPage;
@@ -72,8 +73,11 @@ final class Daemon implements AutoCloseable {
         new LoginPage(sites, sessions, permissions,
                 new LocalLogin(LocalLogin.enabled(config.auth()), users.credentials(), new LoginRateLimiter()),
                 web.trustedProxies()).register(web);
-        new StatusPage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
-                registry::get, status::status, permissions::viewer, uptime, config.dashboard())
+        LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
+                config::categories, config::endpoints);
+        layoutEditor.register(web);
+        new StatusPage(sites, layoutEditor::layout,
+                registry::get, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor)
                 .register(web);
         new ServicePage(sites, () -> layout.resolve(config.categories(), config.endpoints()),
                 registry::get, status::status, permissions::viewer, uptime, history, clock,

@@ -1082,7 +1082,7 @@ test list are build, docs or manual steps.
 - [x] Users, roles and permissions: built-in `viewer`/`editor`/`admin`, custom roles, `disabled`, permission lookup per request; one `Permission` helper used by every responder. Logged-in view gated by `view.private`; header with user, role and logout. **Tests:** role expansion; unknown permission rejected at config load; disabled user (incl. existing session ended); user without `view.private` sees the anonymous view; private endpoint 404 without `view.private`.
 
 ### M10 — Dashboard editing: layout, event titles & notes
-- [ ] Layout editor on the main page (drag and drop plus up/down buttons and category dropdown; private services with visibility markers) and `POST /admin/layout` (CSRF, version check → 409, "Reset to config order", atomic write). **Tests:** save and reload; move service between categories; reorder categories incl. "Other"; conflicting save gets 409; no `layout.edit` → 403; unknown ids rejected; reset restores config order.
+- [x] Layout editor on the main page (drag and drop plus up/down buttons and category dropdown; private services with visibility markers) and `POST /admin/layout` (CSRF, version check → 409, "Reset to config order", atomic write). **Tests:** save and reload; move service between categories; reorder categories incl. "Other"; conflicting save gets 409; no `layout.edit` → 403; unknown ids rejected; reset restores config order.
 - [ ] Rename event (empty = reset to default). **Tests:** rename visible publicly; reset; no `events.annotate` → 403.
 - [ ] Notes: add / edit / delete; public/private toggle; author and timestamps; length limit; forms in list view, event page and day popover; all POST + CSRF; persisted before responding. **Tests:** private note hidden from anonymous in HTML and JSON; edits survive restart; HTML escaping of note text; length limit.
 
@@ -1511,3 +1511,19 @@ them; see CLAUDE.md.
   the CSRF token), or a "Sign in" link for anonymous visitors (no session is started for them); the sign-in pages have
   no user area. A signed-in user without `view.private` gets exactly the anonymous data in HTML and JSON (the JSON
   `viewer` field is their display name).
+- Layout editor (app, `web.page.LayoutEditor`; saving in `LayoutStore.save`): the main page in edit mode is
+  `/?edit=layout` (no auto-refresh, `frame-ancestors 'none'`), linked as "Edit layout" from the main page for users who
+  may use it. It needs `layout.edit` **and** `view.private`, since it lists every service including private ones (a
+  role with only `layout.edit` gets `403`; anonymous visitors are sent to `/login`). It always shows the whole global
+  layout, whatever site it's opened on. Each service shows its visibility as a badge, a category menu and up/down
+  buttons; categories (including "Other") have up/down buttons; HTML5 drag and drop on top. The editor needs JS (Save
+  is a JSON POST, as planned); without it the page shows a notice and hides the controls. `POST /admin/layout` takes
+  `{"version", "categories": [{"id", "services"}]}` or `{"version", "reset": true}` as `application/json` (`415`
+  otherwise, `413` over 256 KiB) with the CSRF token in `X-CSRF-Token`; permission is checked before CSRF. Unknown
+  keys, unknown or repeated category/service ids (in a flat layout only `_other`) are `400` `{"error"}`; ids left
+  out are added as `ResolvedLayout.resolve` does, and the whole effective layout is stored (so stale ids are
+  dropped). A save based on another version is `409` `{"error", "version"}`. "Reset to config order" stores the next
+  version with an empty category list (which resolves exactly like no saved layout) instead of deleting the file,
+  so versions never go back and an editor opened before the reset still gets `409`. Saves are serialized in
+  `LayoutStore`, written with `AtomicFiles`; leftover `.layout.json.*.tmp` files are removed at load. After a save
+  the editor returns to the main page; on `409` it offers "Reload".

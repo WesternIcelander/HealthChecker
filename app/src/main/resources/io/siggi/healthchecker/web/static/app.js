@@ -168,10 +168,198 @@
     popover.style.top = (top + window.scrollY) + "px";
   }
 
+
+  // ---- layout editor (main page, ?edit=layout) ----
+  // Categories and services can be reordered by drag and drop, or with the up/down buttons and
+  // each service's category menu (keyboard and touch). "Save" posts the whole layout as JSON.
+
+  var editor = null;
+  var dragged = null;
+  var dirty = false;
+
+  function initLayoutEditor() {
+    editor = document.querySelector(".layout-editor");
+    if (!editor) return;
+    editor.classList.add("le-ready");
+    var items = editor.querySelectorAll(".le-category, .le-service");
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].classList.contains("le-category") && editor.classList.contains("le-flat")) continue;
+      items[i].setAttribute("draggable", "true");
+    }
+    editor.addEventListener("click", function (event) {
+      var button = event.target.closest ? event.target.closest("button") : null;
+      if (!button || !editor.contains(button)) return;
+      if (button.classList.contains("le-up") || button.classList.contains("le-down")) {
+        var item = button.closest(".le-service") || button.closest(".le-category");
+        moveItem(item, button.classList.contains("le-up") ? -1 : 1, button);
+      } else if (button.classList.contains("le-save")) {
+        save({ categories: collectLayout() });
+      } else if (button.classList.contains("le-reset")) {
+        if (window.confirm("Reset the layout to the order in the config file? This affects everyone.")) {
+          save({ reset: true });
+        }
+      } else if (button.classList.contains("le-reload")) {
+        dirty = false;
+        window.location.reload();
+      }
+    });
+    editor.addEventListener("change", function (event) {
+      var select = event.target;
+      if (!select.classList || !select.classList.contains("le-move")) return;
+      var item = select.closest(".le-service");
+      var target = editor.querySelector(".le-category[data-category=\"" + select.value + "\"] > .le-services");
+      if (!item || !target) return;
+      target.appendChild(item);
+      changed();
+      select.focus();
+      announce("Moved to " + categoryName(target) + ".");
+    });
+    editor.addEventListener("dragstart", onDragStart);
+    editor.addEventListener("dragover", onDragOver);
+    editor.addEventListener("drop", function (event) { if (dragged) event.preventDefault(); });
+    editor.addEventListener("dragend", function () {
+      if (dragged) dragged.classList.remove("le-dragging");
+      dragged = null;
+      changed();
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (dirty) { event.preventDefault(); event.returnValue = ""; }
+    });
+    updateControls();
+  }
+
+  function onDragStart(event) {
+    var target = event.target;
+    if (!target.classList || !(target.classList.contains("le-service") || target.classList.contains("le-category"))) return;
+    dragged = target;
+    dragged.classList.add("le-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    try { event.dataTransfer.setData("text/plain", target.getAttribute("data-service") || target.getAttribute("data-category")); } catch (e) { /* ignore */ }
+  }
+
+  function onDragOver(event) {
+    if (!dragged) return;
+    var isService = dragged.classList.contains("le-service");
+    var over = event.target.closest ? event.target.closest(isService ? ".le-service, .le-services" : ".le-category") : null;
+    if (!over || !editor.contains(over)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (over === dragged || dragged.contains(over)) return;
+    if (over.classList.contains("le-services")) {
+      if (!over.querySelector(".le-service:not(.le-dragging)")) over.appendChild(dragged);
+      return;
+    }
+    var rect = over.getBoundingClientRect();
+    var before = event.clientY < rect.top + rect.height / 2;
+    over.parentNode.insertBefore(dragged, before ? over : over.nextSibling);
+  }
+
+  function moveItem(item, delta, button) {
+    if (!item) return;
+    var sibling = delta < 0 ? item.previousElementSibling : item.nextElementSibling;
+    if (!sibling) return;
+    item.parentNode.insertBefore(item, delta < 0 ? sibling : sibling.nextSibling);
+    changed();
+    // Keep focus on the same button; if it's now disabled, use the other one.
+    var same = item.querySelector(":scope > .le-controls > ." + (delta < 0 ? "le-up" : "le-down")
+      + ", :scope > .le-category-head > .le-controls > ." + (delta < 0 ? "le-up" : "le-down"));
+    var other = item.querySelector(":scope > .le-controls > ." + (delta < 0 ? "le-down" : "le-up")
+      + ", :scope > .le-category-head > .le-controls > ." + (delta < 0 ? "le-down" : "le-up"));
+    if (same && !same.disabled) same.focus(); else if (other) other.focus(); else if (button) button.focus();
+    var list = Array.prototype.slice.call(item.parentNode.children);
+    announce("Moved to position " + (list.indexOf(item) + 1) + " of " + list.length + ".");
+  }
+
+  function changed() {
+    dirty = true;
+    updateControls();
+  }
+
+  function updateControls() {
+    var lists = editor.querySelectorAll(".le-categories, .le-services");
+    for (var i = 0; i < lists.length; i++) {
+      var children = lists[i].children;
+      for (var j = 0; j < children.length; j++) {
+        var controls = children[j].querySelector(":scope > .le-controls, :scope > .le-category-head > .le-controls");
+        if (!controls) continue;
+        controls.querySelector(".le-up").disabled = j === 0;
+        controls.querySelector(".le-down").disabled = j === children.length - 1;
+      }
+    }
+    var services = editor.querySelectorAll(".le-service");
+    for (var k = 0; k < services.length; k++) {
+      var select = services[k].querySelector("select.le-move");
+      var category = services[k].closest(".le-category");
+      if (select && category) select.value = category.getAttribute("data-category");
+    }
+  }
+
+  function categoryName(list) {
+    var name = list.closest(".le-category").querySelector(".le-category-name");
+    return name ? name.textContent : "";
+  }
+
+  function collectLayout() {
+    var result = [];
+    var categories = editor.querySelectorAll(".le-category");
+    for (var i = 0; i < categories.length; i++) {
+      var services = [];
+      var items = categories[i].querySelectorAll(".le-service");
+      for (var j = 0; j < items.length; j++) services.push(items[j].getAttribute("data-service"));
+      result.push({ id: categories[i].getAttribute("data-category"), services: services });
+    }
+    return result;
+  }
+
+  function announce(text, isError, withReload) {
+    var status = editor.querySelector(".le-status");
+    status.textContent = text;
+    status.classList.toggle("form-error", !!isError);
+    if (withReload) {
+      var reload = document.createElement("button");
+      reload.type = "button";
+      reload.className = "le-reload";
+      reload.textContent = "Reload";
+      status.appendChild(document.createTextNode(" "));
+      status.appendChild(reload);
+    }
+  }
+
+  function save(body) {
+    body.version = parseInt(editor.getAttribute("data-version"), 10);
+    var buttons = editor.querySelectorAll(".le-actions button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+    announce("Saving…");
+    fetch(editor.getAttribute("data-action"), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": editor.getAttribute("data-csrf") },
+      body: JSON.stringify(body)
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        if (response.ok) {
+          dirty = false;
+          window.location.href = editor.getAttribute("data-done");
+          return;
+        }
+        if (response.status === 409) {
+          announce("Someone else changed the layout in the meantime. Reload to see their changes (yours will be lost).", true, true);
+        } else {
+          announce("Saving failed: " + (data.error || ("HTTP " + response.status)), true);
+        }
+        for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
+      });
+    }).catch(function () {
+      announce("Saving failed: the server couldn't be reached.", true);
+      for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
+    });
+  }
+
   function init() {
     document.documentElement.classList.add("js");
     initTooltips();
     initDayPopover();
+    initLayoutEditor();
   }
 
   if (document.readyState === "loading") {

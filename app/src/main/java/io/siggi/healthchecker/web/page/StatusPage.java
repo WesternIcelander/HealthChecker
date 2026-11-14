@@ -50,6 +50,7 @@ public final class StatusPage {
     private final Function<HTTPRequest, Viewer> viewers;
     private final UptimeCalculator uptime;
     private final DashboardConfig dashboard;
+    private final LayoutEditor editor;
     private final CategoryGrouping grouping = new CategoryGrouping(new ViewFilter());
 
     /**
@@ -65,6 +66,19 @@ public final class StatusPage {
                       Function<String, Optional<EndpointStatus>> statuses,
                       Function<HTTPRequest, Viewer> viewers,
                       UptimeCalculator uptime, DashboardConfig dashboard) {
+        this(sites, layout, endpoints, statuses, viewers, uptime, dashboard, null);
+    }
+
+    /**
+     * @param editor the layout editor, shown at {@code /?edit=layout} with an "Edit layout" link for users
+     *               who may use it, or {@code null} for none
+     */
+    public StatusPage(SiteResolver sites, Supplier<ResolvedLayout> layout,
+                      Function<String, Optional<Endpoint>> endpoints,
+                      Function<String, Optional<EndpointStatus>> statuses,
+                      Function<HTTPRequest, Viewer> viewers,
+                      UptimeCalculator uptime, DashboardConfig dashboard, LayoutEditor editor) {
+        this.editor = editor;
         this.sites = sites;
         this.layout = layout;
         this.endpoints = endpoints;
@@ -123,6 +137,10 @@ public final class StatusPage {
 
     private void page(HTTPRequest request) throws Exception {
         if (!request.path().equals("/")) return; // nothing written → 404
+        if (editor != null && "layout".equals(request.get().get("edit"))) {
+            editPage(request);
+            return;
+        }
         Optional<Model> found = model(request);
         if (found.isEmpty()) return;
         request.allowedMethods("GET");
@@ -134,6 +152,10 @@ public final class StatusPage {
         html.append("<p class=\"banner banner-").append(overall).append("\" role=\"status\">")
                 .append("<span class=\"dot state-").append(overall).append("\" aria-hidden=\"true\"></span>")
                 .append(Html.escape(bannerText(model))).append("</p>\n");
+        if (editor != null && !model.viewer().anonymous() && editor.canEdit(request)) {
+            html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
+                    .append(Html.escape(site.link("/?edit=layout"))).append("\">Edit layout</a></p>\n");
+        }
         for (Section section : model.sections()) {
             CategorySection category = section.category();
             html.append("<section class=\"category\">\n");
@@ -155,6 +177,23 @@ public final class StatusPage {
             html.append("<p class=\"empty muted\">No services to show.</p>\n");
         }
         PageSupport.foot(html, site);
+        write(request, "200 OK", "text/html; charset=utf-8", html.toString());
+    }
+
+    /** The main page in layout-editing mode (no auto-refresh, which would discard the edits). */
+    private void editPage(HTTPRequest request) throws Exception {
+        Optional<Site> found = sites.resolve(request);
+        if (found.isEmpty()) return;
+        request.allowedMethods("GET");
+        Site site = found.get();
+        if (!editor.requireAccess(request, site)) return;
+        Viewer viewer = viewers.apply(request);
+        StringBuilder html = new StringBuilder(16384);
+        PageSupport.head(html, site, "Edit layout · " + site.title(), false, viewer);
+        editor.render(html, site, viewer);
+        PageSupport.foot(html, site);
+        request.response.setHeader("X-Frame-Options", "DENY");
+        request.response.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
     }
 

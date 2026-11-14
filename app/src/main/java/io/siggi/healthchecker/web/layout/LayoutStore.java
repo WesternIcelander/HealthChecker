@@ -1,5 +1,7 @@
 package io.siggi.healthchecker.web.layout;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -8,9 +10,11 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import io.siggi.healthchecker.config.CategoryConfig;
 import io.siggi.healthchecker.config.EndpointDefinition;
+import io.siggi.healthchecker.history.AtomicFiles;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -20,8 +24,7 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * The dashboard layout saved by logged-in users, in {@code {dataDir}/layout.json}
- * (read side; saving comes with the layout editor).
+ * The dashboard layout saved by logged-in users, in {@code {dataDir}/layout.json}.
  *
  * <p>File format:
  * <pre>{@code
@@ -32,12 +35,19 @@ import java.util.Set;
  * }</pre>
  * {@code "_other"} is the implicit "Other" category; the leading underscore can't clash
  * with a category id. A missing file means no saved layout (version 0).
+ *
+ * <p>Saves are versioned: {@link #save} only succeeds when based on the current version, and
+ * writes the next one atomically. "Reset to config order" saves an empty category list, which
+ * resolves exactly like no saved layout but keeps the version counting up, so an editor opened
+ * before the reset still gets a conflict.
  */
 public final class LayoutStore {
     public static final String FILE_NAME = "layout.json";
 
     private static final Set<String> ROOT_KEYS = Set.of("version", "categories");
     private static final Set<String> CATEGORY_KEYS = Set.of("id", "services");
+
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     private final Path file;
     private volatile SavedLayout saved;
@@ -55,7 +65,8 @@ public final class LayoutStore {
      *
      * @throws IOException if the file can't be read or is malformed (the message names the file)
      */
-    public void load() throws IOException {
+    public synchronized void load() throws IOException {
+        deleteLeftoverTempFiles();
         String json;
         try {
             json = Files.readString(file, StandardCharsets.UTF_8);
@@ -67,6 +78,20 @@ public final class LayoutStore {
             saved = decode(json);
         } catch (FormatException e) {
             throw new IOException(file + ": " + e.getMessage());
+        }
+    }
+
+    /** Removes temp files of this store's file left behind by a crash during a save. */
+    private void deleteLeftoverTempFiles() throws IOException {
+        Path dir = file.toAbsolutePath().getParent();
+        if (!Files.isDirectory(dir)) return;
+        String prefix = "." + FILE_NAME + ".";
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(dir, prefix + "*")) {
+            for (Path temp : files) {
+                if (AtomicFiles.isTempFile(temp) && Files.isRegularFile(temp)) {
+                    Files.deleteIfExists(temp);
+                }
+            }
         }
     }
 
@@ -84,6 +109,60 @@ public final class LayoutStore {
     /** The effective layout for the current categories and endpoints (both in config order). */
     public ResolvedLayout resolve(List<CategoryConfig> categories, List<EndpointDefinition> endpoints) {
         return ResolvedLayout.resolve(saved, categories, endpoints);
+    }
+
+    /** A save based on a version other than the current one. */
+    public static final class VersionConflictException extends Exception {
+        private final int currentVersion;
+
+        VersionConflictException(int currentVersion) {
+            super("the layout was changed (now version " + currentVersion + ")");
+            this.currentVersion = currentVersion;
+        }
+
+        public int currentVersion() {
+            return currentVersion;
+        }
+    }
+
+    /**
+     * Replaces the saved layout with {@code categories} as the next version, written atomically.
+     * An empty list resets to config order.
+     *
+     * @param expectedVersion the version the edit was based on
+     * @return the saved layout
+     * @throws VersionConflictException if {@code expectedVersion} isn't the current version
+     * @throws IOException if writing fails; the saved layout is then unchanged
+     */
+    public synchronized SavedLayout save(int expectedVersion, List<SavedLayout.Category> categories)
+            throws IOException, VersionConflictException {
+        int current = version();
+        if (expectedVersion != current) {
+            throw new VersionConflictException(current);
+        }
+        if (current == Integer.MAX_VALUE) {
+            throw new IOException(file + ": version limit reached");
+        }
+        SavedLayout next = new SavedLayout(current + 1, categories);
+        AtomicFiles.write(file, encode(next).getBytes(StandardCharsets.UTF_8));
+        saved = next;
+        return next;
+    }
+
+    static String encode(SavedLayout layout) {
+        JsonObject root = new JsonObject();
+        root.addProperty("version", layout.version());
+        JsonArray categories = new JsonArray();
+        for (SavedLayout.Category category : layout.categories()) {
+            JsonObject c = new JsonObject();
+            c.addProperty("id", category.id());
+            JsonArray services = new JsonArray();
+            category.services().forEach(services::add);
+            c.add("services", services);
+            categories.add(c);
+        }
+        root.add("categories", categories);
+        return GSON.toJson(root) + "\n";
     }
 
     private static final class FormatException extends Exception {

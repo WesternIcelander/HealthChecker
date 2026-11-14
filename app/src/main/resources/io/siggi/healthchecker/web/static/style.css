@@ -539,3 +539,77 @@ h2.day-title { font-size: 1.4rem; }
   cursor: pointer;
 }
 .form-error { color: var(--down); font-weight: 600; }
+
+/* ---- layout editor ---- */
+
+.page-actions { margin: 0 0 16px; }
+.button, .layout-editor button {
+  display: inline-block;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+.layout-editor button:disabled { opacity: 0.4; cursor: default; }
+.layout-editor .button-primary { background: var(--link); border-color: var(--link); color: #fff; }
+
+.layout-editor h2 { margin: 8px 0 4px; font-size: 1.2rem; }
+.le-help { margin: 0 0 12px; font-size: 0.9rem; }
+.le-categories, .le-services { list-style: none; margin: 0; padding: 0; }
+.le-category {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.le-category-head, .le-service {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.le-category-name { margin: 0; font-size: 1rem; }
+.le-note { font-size: 0.8rem; }
+.le-services { margin-top: 6px; min-height: 2.25rem; }
+.le-services:empty {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.le-service {
+  padding: 4px 8px;
+  margin: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.le-name { flex: 1 1 8rem; min-width: 0; overflow-wrap: anywhere; }
+.le-controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; }
+.le-controls select {
+  font: inherit;
+  font-size: 0.85rem;
+  max-width: 12rem;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.le-controls button { padding: 0 8px; }
+.le-grip { color: var(--muted); cursor: grab; user-select: none; }
+.le-vis-private { border-color: var(--degraded-orange); color: var(--degraded-orange); }
+.le-vis-public-status { color: var(--muted); }
+.le-dragging { opacity: 0.5; }
+.le-flat .le-category { border: 0; padding: 0; background: none; }
+.le-flat .le-category-head { display: none; }
+.le-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.le-reset { margin-left: auto; }
+.le-status:empty { display: none; }
+.layout-editor:not(.le-ready) .le-controls,
+.layout-editor:not(.le-ready) .le-grip,
+.layout-editor:not(.le-ready) .le-actions button { display: none; }
