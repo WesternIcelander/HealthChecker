@@ -1052,7 +1052,7 @@ test list are build, docs or manual steps.
 
 ### M5 — History store & uptime
 - [x] `HistoryStore`: coverage periods with minute heartbeat; events (open/close, `start` = first failure of streak); yearly JSONL files; atomic writes; load at startup. Restart handling: close open events as `endedUnobserved`; coverage gap while app was down. **Tests:** write/read round trip; restart while down; restart while up leaves a gap; crash mid-write leaves the previous file intact.
-- [ ] `UptimeCalculator`: exact downtime ∩ coverage for 24 h, 60 d and any day in the configured timezone; "no data" handling; never round up to 100 %; per-day cache. **Tests:** event across midnight split between days; DST transition day (23 h / 25 h); no-coverage days; partial coverage; rounding (99.995 % → 99.99 %); cache invalidated on event change.
+- [x] `UptimeCalculator`: exact downtime ∩ coverage for 24 h, 60 d and any day in the configured timezone; "no data" handling; never round up to 100 %; per-day cache. **Tests:** event across midnight split between days; DST transition day (23 h / 25 h); no-coverage days; partial coverage; rounding (99.995 % → 99.99 %); cache invalidated on event change.
 
 ### M6 — Public main page & status API
 - [ ] `WebServer` on SiggiHTTP: port/bind, responders, `listen()` thread, `trustedProxies`, static CSS/JS; `GET /health`. **Tests:** `/health` 200; `X-Forwarded-For` honoured only from trusted proxies.
@@ -1271,3 +1271,17 @@ them; see CLAUDE.md.
   directory, fsync, atomic rename); leftover `.{name}.*.tmp` files are deleted at load. A failed
   write is logged and retried on the next heartbeat. `run` loads the history after validating
   endpoints (startup error if it can't).
+- `UptimeCalculator` (app, package `history`): uptime = 1 − (counted downtime ∩ coverage ∩ window) /
+  (coverage ∩ window), in exact nanoseconds. Counted downtime is every `outage` event plus
+  `maintenance` events when `maintenance.countsAsDowntime`; overlapping events are merged so no time
+  counts twice; an ongoing event runs until now, and so does the current coverage period while the
+  endpoint is monitored (the heartbeat only writes it once a minute). Windows never extend past now.
+  Rolling windows are `[now − 24 h, now)` and `[now − 60 × 24 h, now)`; a day is `[start of day,
+  start of next day)` in the configured timezone, so DST days have 23 or 25 hours. Percentages are
+  always truncated to two decimals (never rounded), so any downtime shows below 100 %; formatted as
+  `100%`, `99.5%`, `99.99%`, and `—` without data. A day summary has the uptime, the number of
+  counted events overlapping the day and the number of uncounted maintenance events. Day summaries
+  are cached per endpoint once the day ended at least 10 minutes ago (a check started before
+  midnight may be recorded after it); an endpoint's cache is dropped (by generation counter, so an
+  in-flight computation can't store a stale entry) when one of its events opens or closes, or via
+  `invalidate(id)`. `run` doesn't create it yet; the web server does.
