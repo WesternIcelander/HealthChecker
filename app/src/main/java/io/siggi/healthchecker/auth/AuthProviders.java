@@ -313,7 +313,7 @@ public final class AuthProviders {
     }
 
     /** {@code localhost} or a loopback IP literal (never resolved through DNS). */
-    private static boolean isLoopback(String host) {
+    static boolean isLoopback(String host) {
         String h = host.toLowerCase(Locale.ROOT);
         if (h.equals("localhost") || h.endsWith(".localhost")) return true;
         if (h.equals("[::1]") || h.equals("[0:0:0:0:0:0:0:1]")) return true;

@@ -1103,7 +1103,7 @@ test list are build, docs or manual steps.
 
 ### M13 — OIDC / OAuth 2.0 login
 - [x] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
-- [ ] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
+- [x] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
 - [ ] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
 - [ ] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
 - [ ] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
@@ -1795,3 +1795,20 @@ them; see CLAUDE.md.
   value must be a string or a whole number (written without decimals, e.g. GitHub's `id`), non-empty, at most 512
   characters and without control characters; otherwise there is no identifier (sign-in fails). The identifier is
   `{providerId}:{value}`, value unchanged (no case folding).
+- OIDC flow (app, `auth.OidcLogin`, `auth.Jwks`): `start` fetches discovery (`{issuer without trailing /}/.well-known/openid-configuration`,
+  cached 1 h; its `issuer` must equal the configured one exactly; endpoints must be https, or http on loopback as for
+  provider URLs) and returns the authorization URL plus a `Pending` (provider, 32-byte random `state`, `nonce` and PKCE
+  verifier, redirect URI, start time) that the caller keeps in the visitor's session, single-use, valid 10 minutes.
+  `finish` checks `state` (constant-time) before anything else, then a provider `error`, the RFC 9207 `iss` parameter
+  when sent, and exchanges the code (PKCE verifier; `client_secret_basic` when the discovery document allows it, which
+  is also its default, else `client_secret_post`; public clients send only `client_id`). The `id_token` is checked
+  for: alg in RS256/384/512, ES256/384/512 (from the header, before any key lookup; a `crit` header is refused);
+  signature via SimpleJWT against JWKS keys with the token's `kid` (or all suitable keys without one); `iss` exactly
+  the configured issuer; `aud` containing the client id, `azp` equal to it when present and required with several
+  audiences; `exp` and `iat` required, `nbf` honoured, all with 60 s skew; `nonce`; non-empty `sub`. JWKS is cached
+  per URI (24 h), and fetched again when a token names an unknown `kid`, at most once per 30 s. JWKs with `use` other
+  than `sig`, RSA keys under 2048 bits, curves other than P-256/384/521 and unparseable keys are skipped. HTTP: 10 s
+  timeouts, no redirects, responses over 1 MiB refused. Failures are `OidcException`s with log-only messages.
+  SimpleJWT 1.1 brings SimpleECDSA and BouncyCastle (`bcprov`), shaded unrelocated into the app jar. Worked around in
+  SimpleJWT: `getHeaderValue` throws for a missing key (the header object is read instead), and ES verification
+  accepts any even signature length (the length is checked against the curve first).

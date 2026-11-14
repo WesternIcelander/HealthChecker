@@ -20,6 +20,7 @@
         <gson.version>2.13.2</gson.version>
         <junit.version>5.13.4</junit.version>
         <siggihttp.version>1.11-SNAPSHOT</siggihttp.version>
+        <simplejwt.version>1.1</simplejwt.version>
     </properties>
 
     <dependencyManagement>
@@ -33,6 +34,11 @@
                 <groupId>io.siggi</groupId>
                 <artifactId>SiggiHTTP</artifactId>
                 <version>${siggihttp.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.siggi</groupId>
+                <artifactId>SimpleJWT</artifactId>
+                <version>${simplejwt.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.google.code.gson</groupId>
