@@ -1034,7 +1034,7 @@ test list are build, docs or manual steps.
 
 ### M1 — Skeleton, modules & config
 - [x] Add `.DS_Store` to `.gitignore`.
-- [ ] Convert to multi-module: `HealthChecker-Parent` (root), `HealthChecker-API` (`api/`), `HealthChecker` (`app/`, move `Main`); shading in app only, Gson not relocated. Add Gson and JUnit 5 + surefire. **Tests:** a trivial smoke test so `mvn test` runs in both modules.
+- [x] Convert to multi-module: `HealthChecker-Parent` (root), `HealthChecker-API` (`api/`), `HealthChecker` (`app/`, move `Main`); shading in app only, Gson not relocated. Add Gson and JUnit 5 + surefire. **Tests:** a trivial smoke test so `mvn test` runs in both modules.
 - [ ] `ConfigLoader`: server, dataDir, timezone, dashboard, defaults, sites, categories, endpoints (common fields incl. `id`, `category`, `reminders`), `${env:…}` substitution, collected error reporting. **Tests:** loading a full config; defaults applied; each validation rule; all errors reported together; env substitution and unresolved `${env:…}`.
 - [ ] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
 
@@ -1148,6 +1148,9 @@ them; see CLAUDE.md.
 - `HealthChecker-API` is installed locally with `mvn install`; not deployed for now.
 - Artifact names: `HealthChecker-Parent`, `HealthChecker-API`, `HealthChecker`, `MinecraftChecker`.
 - Gson lives in the main app, not relocated; plugins use it with `provided` scope.
+- Versions are managed in the parent pom: Gson 2.13.2 (the plugin contract version),
+  JUnit 5.13.4 (test scope in every module), Java release 21. Only `app` shades; it
+  doesn't write a dependency-reduced pom.
 - Endpoint targets (URLs, hosts, ports) are never public; only names (and ids, in URLs) are.
 - Uptime shown for rolling 24 h and 60 days; per-day uptime in the configured timezone.
 - Reminders are minutes after the outage started; default `[30, 60, 120]`, configurable.
