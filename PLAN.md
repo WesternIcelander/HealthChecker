@@ -1109,7 +1109,7 @@ test list are build, docs or manual steps.
 - [x] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
 
 ### M14 — Notifications: framework, reminders & Discord
-- [ ] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
+- [x] `NotificationDispatcher`: `notify` routing (`false`/`[]` off, omitted = defaults), batching, async retry/backoff, last-error tracking. **Tests:** routing cases (`false`, omitted, defaults `false` + opt-in); batching window combines; retry with backoff; last error recorded.
 - [ ] Reminders: schedule from outage start per `reminders` (+ optional `reminderRepeatMinutes`); cancel on recovery; persisted in `data/notifications/state.json`; overdue-after-restart sent once. **Tests:** with a fake clock: reminders at 30/60/120 and none after; none after recovery; repeat interval; restart mid-outage sends the overdue one once.
 - [ ] `DiscordNotifier`: embeds (down/reminder/recovered), splitting, `allowed_mentions`, 429 handling; "Send test notification" (`notifications.test`). **Tests:** fake webhook server: payload shape; >10 embeds split; mention only on down/reminder; 429 then success; 4xx permanent; test button requires permission.
 - [ ] Maintenance: suppress down/reminder/recovery for affected endpoints during a window; down at window end if still down; announcements (created, `announceBeforeHours`, started, ended, cancelled) to the window's `notifyChannels`. **Tests:** no alerts during maintenance; alert at window end if still down; announcements go to window channels only.
@@ -1852,3 +1852,18 @@ them; see CLAUDE.md.
   5 per identifier per hour (in memory); the page is shown every time. `/login` shows a "Sign in with …" link per
   offered provider (`rel=nofollow`, carrying `next`); with `auth.local.enabled: false` the password form is left out,
   and with neither, the page says no sign-in method is available.
+- `NotificationDispatcher` (app, package `notify`): routing uses `EndpointDefinition.notifyChannels()` as the config
+  loader resolved it (omitted = `defaults.notify`, `false`/`[]` = none), so the dispatcher only drops unknown names.
+  `send(channels, notification)` bypasses routing (announcements, tests) and rejects unknown names. The first
+  notification for a channel opens a fixed window (`batchWindow`, from first to send, not sliding); everything raised
+  for that channel until it closes becomes one `NotificationBatch` with a random UUID kept across retries. Per channel,
+  batches are delivered one at a time in order (a batch being retried holds later ones back, so a recovery never
+  overtakes its down notice), on virtual threads fed by one timer thread (`TaskScheduler`, replaced by a manual clock
+  in tests). `Notifier.send` throws `NotifierException` (`permanent`, optional `retryAfter`); an unexpected
+  `RuntimeException` counts as temporary. Backoff (`RetryPolicy.DEFAULT`): 10 s doubling, capped at 10 min, given up
+  after 10 attempts; a receiver's `retryAfter` is used when longer. Every failure is logged (`WARNING` while retrying,
+  `ERROR` when given up) and kept as the channel's last error with its time (`ChannelStatus`, which also has the last
+  success and the pending count); a later success doesn't clear it. `Notification.forChange` maps a `StateChange`:
+  any change to DOWN → down, DOWN → UP → recovered, otherwise nothing. Parsing `notifications.batchSeconds`, the
+  `StatusRegistry` listener and `Daemon` wiring come with the first notifier type (`DiscordNotifier`), since until then
+  no channel can be built; `close()` drops pending messages for now (M16 adds the bounded flush).
