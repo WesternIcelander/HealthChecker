@@ -1,5 +1,6 @@
 package io.siggi.healthchecker.web.page;
 
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -10,6 +11,7 @@ import io.siggi.healthchecker.web.site.Site;
 import io.siggi.healthchecker.web.site.SiteResolver;
 import io.siggi.http.HTTPRequest;
 
+import java.net.InetAddress;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
@@ -41,6 +43,14 @@ public final class LoginPage {
         this.permissions = permissions;
         this.local = local;
         this.trustedProxies = trustedProxies;
+    }
+
+    private volatile AuditLog audit = AuditLog.disabled();
+
+    /** Records failed sign-ins (with the client address only) in {@code audit}. */
+    public LoginPage audit(AuditLog audit) {
+        this.audit = audit;
+        return this;
     }
 
     public void register(WebServer server) {
@@ -90,8 +100,9 @@ public final class LoginPage {
         String next = safeNext(value(post, "next"));
         char[] password = value(post, "password").toCharArray();
         LocalLogin.Result result;
+        InetAddress client = trustedProxies.clientAddress(request);
         try {
-            result = local.attempt(username, password, trustedProxies.clientAddress(request));
+            result = local.attempt(username, password, client);
         } finally {
             Arrays.fill(password, '\0');
         }
@@ -104,8 +115,11 @@ public final class LoginPage {
                 request.response.setHeader("Content-Length", "0");
                 request.response.write(new byte[0]);
             }
-            case LocalLogin.Result.Failure failure ->
-                    form(request, site, "401 Unauthorized", "Wrong username or password.", username, next);
+            case LocalLogin.Result.Failure failure -> {
+                // Never the username or password: either may be a mistyped password.
+                audit.record(null, null, "login.failed", client.getHostAddress(), null, null);
+                form(request, site, "401 Unauthorized", "Wrong username or password.", username, next);
+            }
             case LocalLogin.Result.RateLimited limited -> {
                 long seconds = Math.max(1, ceilSeconds(limited.retryAfter()));
                 request.response.setHeader("Retry-After", Long.toString(seconds));

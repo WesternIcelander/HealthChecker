@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -83,6 +84,13 @@ public final class LayoutEditor {
     }
 
     private CategoryEditor categoryEditor;
+    private volatile AuditLog audit = AuditLog.disabled();
+
+    /** Records layout saves in {@code audit}. */
+    public LayoutEditor audit(AuditLog audit) {
+        this.audit = audit;
+        return this;
+    }
 
     public void register(WebServer server) {
         server.register(PATH, this::post);
@@ -287,7 +295,13 @@ public final class LayoutEditor {
         }
         SavedLayout saved;
         try {
-            saved = store.save(parsed.version(), toSave);
+            // Under the store's lock, so "before" is what the save replaced.
+            synchronized (store) {
+                SavedLayout before = store.saved().orElse(null);
+                saved = store.save(parsed.version(), toSave);
+                Audits.record(audit, permissions, request, parsed.reset() ? "layout.reset" : "layout.save", "layout",
+                        Audits.layout(before), Audits.layout(saved));
+            }
         } catch (LayoutStore.VersionConflictException e) {
             JsonObject conflict = new JsonObject();
             conflict.addProperty("error", "Someone else changed the layout in the meantime.");

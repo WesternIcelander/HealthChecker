@@ -1,6 +1,7 @@
 package io.siggi.healthchecker.web.page;
 
 import com.google.gson.JsonObject;
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -11,6 +12,7 @@ import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.web.Html;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.layout.SavedLayout;
 import io.siggi.healthchecker.web.layout.ResolvedLayout;
 import io.siggi.healthchecker.web.site.Site;
 import io.siggi.healthchecker.web.site.SiteResolver;
@@ -51,6 +53,7 @@ public final class CategoryEditor {
     private final EndpointStore store;
     private final LayoutStore layout;
     private final Config config;
+    private volatile AuditLog audit = AuditLog.disabled();
 
     public CategoryEditor(SiteResolver sites, Permissions permissions, SessionManager sessions, EndpointStore store,
                           LayoutStore layout, Config config) {
@@ -60,6 +63,12 @@ public final class CategoryEditor {
         this.store = store;
         this.layout = layout;
         this.config = config;
+    }
+
+    /** Records category changes and copies in {@code audit}. */
+    public CategoryEditor audit(AuditLog audit) {
+        this.audit = audit;
+        return this;
     }
 
     public void register(WebServer server) {
@@ -131,8 +140,18 @@ public final class CategoryEditor {
         if ("copy".equals(sub)) {
             if (!fromConfig) return; // only config categories → 404
             if (post) {
+                // Recorded as written in config.json, so substituted ${env:…} values stay out of the log.
+                JsonObject written = config.categoryEntries().containsKey(id)
+                        ? config.categoryEntries().get(id).written() : EndpointStore.categoryEntry(category);
                 String[] failed = CopyToDashboard.submit(request, site, PATH + "/" + id + "/copy",
-                        version -> store.copyCategory(version, id), version -> store.cancelCategoryCopy(version, id));
+                        version -> {
+                            store.copyCategory(version, id);
+                            Audits.record(audit, permissions, request, "category.copy", id, null, written);
+                        },
+                        version -> {
+                            store.cancelCategoryCopy(version, id);
+                            Audits.record(audit, permissions, request, "category.copy.cancel", id, written, null);
+                        });
                 if (failed != null) copyPage(request, site, failed[0], category, null, failed[1]);
             } else {
                 copyPage(request, site, "200 OK", category, CopyToDashboard.notice(request), null);
@@ -188,7 +207,15 @@ public final class CategoryEditor {
             return;
         }
         try {
-            store.putCategory(CopyToDashboard.parseVersion(form.get("version")), entry);
+            // Under the store's lock, so "before" is what the save replaced.
+            synchronized (store) {
+                JsonObject before = store.categories().stream()
+                        .filter(c -> c.category().id().equals(id) && c.source() == EndpointStore.Source.DASHBOARD)
+                        .findFirst().map(c -> EndpointStore.categoryEntry(c.category())).orElse(null);
+                CategoryConfig saved = store.putCategory(CopyToDashboard.parseVersion(form.get("version")), entry);
+                Audits.record(audit, permissions, request, existing == null ? "category.create" : "category.edit", id,
+                        before, EndpointStore.categoryEntry(saved));
+            }
         } catch (EndpointStore.InvalidEntryException e) {
             formPage(request, site, "400 Bad Request", existing, form, e.errors());
             return;
@@ -214,6 +241,7 @@ public final class CategoryEditor {
         String id = category.id();
         try {
             store.removeCategory(CopyToDashboard.parseVersion(post.getOrDefault("version", "")), id);
+            Audits.record(audit, permissions, request, "category.delete", id, EndpointStore.categoryEntry(category), null);
         } catch (EndpointStore.VersionConflictException e) {
             deletePage(request, site, "409 Conflict", category, e.currentVersion(), "Someone else changed the services "
                     + "or categories in the meantime. Check the list and confirm again.");
@@ -229,7 +257,13 @@ public final class CategoryEditor {
             return;
         }
         try {
-            layout.moveToOther(id);
+            synchronized (layout) {
+                SavedLayout before = layout.saved().orElse(null);
+                if (layout.moveToOther(id)) {
+                    Audits.record(audit, permissions, request, "layout.move-to-other", id, Audits.layout(before),
+                            Audits.layout(layout.saved().orElse(null)));
+                }
+            }
         } catch (IOException e) {
             // The category is gone; the resolved layout puts its services back in their own category or "Other".
             System.getLogger(CategoryEditor.class.getName()).log(System.Logger.Level.ERROR,

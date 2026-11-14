@@ -1,5 +1,6 @@
 package io.siggi.healthchecker.web.page;
 
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
@@ -45,11 +46,24 @@ public final class EventEditor {
     private final Permissions permissions;
     private final SessionManager sessions;
     private final HistoryStore history;
+    private volatile AuditLog audit = AuditLog.disabled();
 
     public EventEditor(Permissions permissions, SessionManager sessions, HistoryStore history) {
         this.permissions = permissions;
         this.sessions = sessions;
         this.history = history;
+    }
+
+    /** Records renames and note changes in {@code audit}. */
+    public EventEditor audit(AuditLog audit) {
+        this.audit = audit;
+        return this;
+    }
+
+    /** The note {@code noteId} of an event, or {@code null}. */
+    private EventNote findNote(String endpointId, String eventId, String noteId) {
+        return history.event(endpointId, eventId).flatMap(e -> e.notes().stream()
+                .filter(n -> n.id().equals(noteId)).findFirst()).orElse(null);
     }
 
     /** Whether the request's user may rename events and edit notes (for showing the forms). */
@@ -103,7 +117,15 @@ public final class EventEditor {
         }
         Optional<HistoryEvent> renamed;
         try {
-            renamed = history.rename(endpointId, eventId, title.isEmpty() ? null : title);
+            // Under the history's lock, so "before" is what the rename replaced.
+            synchronized (history) {
+                String before = history.event(endpointId, eventId).map(HistoryEvent::title).orElse(null);
+                renamed = history.rename(endpointId, eventId, title.isEmpty() ? null : title);
+                if (renamed.isPresent()) {
+                    Audits.record(audit, permissions, request, "event.rename", endpointId + "/" + eventId,
+                            Audits.title(before), Audits.title(renamed.get().title()));
+                }
+            }
         } catch (IOException e) {
             System.getLogger(EventEditor.class.getName()).log(System.Logger.Level.ERROR,
                     "Renaming event " + eventId + " of " + endpointId + " failed", e);
@@ -190,7 +212,13 @@ public final class EventEditor {
         String endpointId = service.endpoint().id();
         Optional<EventNote> added;
         try {
-            added = history.addNote(endpointId, eventId, service.viewer().userName(), text, visibility);
+            synchronized (history) {
+                added = history.addNote(endpointId, eventId, service.viewer().userName(), text, visibility);
+                if (added.isPresent()) {
+                    Audits.record(audit, permissions, request, "note.add",
+                            endpointId + "/" + eventId + "/" + added.get().id(), null, Audits.note(added.get()));
+                }
+            }
         } catch (IOException e) {
             saveFailed(request, "Adding a note to event " + eventId + " of " + endpointId + " failed", e);
             return;
@@ -214,7 +242,14 @@ public final class EventEditor {
         String endpointId = service.endpoint().id();
         Optional<EventNote> edited;
         try {
-            edited = history.editNote(endpointId, eventId, noteId, text, visibility);
+            synchronized (history) {
+                EventNote before = findNote(endpointId, eventId, noteId);
+                edited = history.editNote(endpointId, eventId, noteId, text, visibility);
+                if (edited.isPresent()) {
+                    Audits.record(audit, permissions, request, "note.edit", endpointId + "/" + eventId + "/" + noteId,
+                            Audits.note(before), Audits.note(edited.get()));
+                }
+            }
         } catch (IOException e) {
             saveFailed(request, "Editing note " + noteId + " of event " + eventId + " of " + endpointId + " failed", e);
             return;
@@ -231,7 +266,14 @@ public final class EventEditor {
         String endpointId = service.endpoint().id();
         boolean deleted;
         try {
-            deleted = history.deleteNote(endpointId, eventId, noteId);
+            synchronized (history) {
+                EventNote before = findNote(endpointId, eventId, noteId);
+                deleted = history.deleteNote(endpointId, eventId, noteId);
+                if (deleted) {
+                    Audits.record(audit, permissions, request, "note.delete", endpointId + "/" + eventId + "/" + noteId,
+                            Audits.note(before), null);
+                }
+            }
         } catch (IOException e) {
             saveFailed(request, "Deleting note " + noteId + " of event " + eventId + " of " + endpointId + " failed", e);
             return;

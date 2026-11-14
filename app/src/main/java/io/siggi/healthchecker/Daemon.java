@@ -1,6 +1,7 @@
 package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.LoginRateLimiter;
 import io.siggi.healthchecker.auth.Permissions;
@@ -22,6 +23,7 @@ import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.page.AuditPage;
 import io.siggi.healthchecker.web.page.EndpointEditor;
 import io.siggi.healthchecker.web.page.EventEditor;
 import io.siggi.healthchecker.web.page.CategoryEditor;
@@ -111,26 +113,31 @@ final class Daemon implements AutoCloseable {
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
         UserDirectory users = UserDirectory.parse(config.auth());
         Permissions permissions = new Permissions(sessions, users::user);
+        AuditLog audit = AuditLog.open(config.dataDir());
+        AuditPage auditPage = new AuditPage(sites, permissions, audit, config.timezone());
+        auditPage.register(web);
         new LoginPage(sites, sessions, permissions,
                 new LocalLogin(LocalLogin.enabled(config.auth()), users.credentials(), new LoginRateLimiter()),
-                web.trustedProxies()).register(web);
+                web.trustedProxies()).audit(audit).register(web);
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
-                endpoints::categoryConfigs, endpoints::definitions);
+                endpoints::categoryConfigs, endpoints::definitions).audit(audit);
         layoutEditor.register(web);
-        CategoryEditor categoryEditor = new CategoryEditor(sites, permissions, sessions, endpoints, layout, config);
+        CategoryEditor categoryEditor = new CategoryEditor(sites, permissions, sessions, endpoints, layout, config)
+                .audit(audit);
         categoryEditor.register(web);
         layoutEditor.categoryEditor(categoryEditor);
         EndpointEditor endpointEditor = new EndpointEditor(sites, permissions, sessions, endpoints, plugins, config,
-                history);
+                history).audit(audit);
         endpointEditor.register(web);
         StatusPage statusPage = new StatusPage(sites, layoutEditor::layout,
                 lookup, status::status, permissions::viewer, uptime, config.dashboard(), layoutEditor);
         statusPage.endpointEditor(endpointEditor);
+        statusPage.auditPage(auditPage);
         statusPage.register(web);
         ServicePage servicePage = new ServicePage(sites,
                 () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()),
                 lookup, status::status, permissions::viewer, uptime, history, clock,
-                config.dashboard(), new EventEditor(permissions, sessions, history));
+                config.dashboard(), new EventEditor(permissions, sessions, history).audit(audit));
         servicePage.endpointEditor(endpointEditor);
         servicePage.register(web);
     }

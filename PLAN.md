@@ -1093,7 +1093,7 @@ test list are build, docs or manual steps.
 - [x] "Test now" (no save, rate-limited). **Tests:** returns result without persisting; rate limit.
 - [x] Delete with confirmation; keep or delete history (`history.delete`); block id reuse while history exists. **Tests:** history kept by default; deleted with permission; id reuse blocked.
 - [x] Category editor in the layout editor (add/rename/delete dashboard categories; delete moves services to "Other"), and "Copy to dashboard" for config-defined endpoints/categories. **Tests:** delete moves services; config categories read-only; copy produces an equivalent entry and the removal instructions.
-- [ ] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
+- [x] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
 
 ### M12 — Scheduled maintenance
 - [ ] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
@@ -1536,7 +1536,7 @@ them; see CLAUDE.md.
   `next` (checked like the login's `next`; without one, the event permalink). The rename form is shown in the list
   view and on the permalink page to users with `events.annotate`, prefilled with the stored custom title (also for
   users without `view.private`, who may rename anyway) and the default title as placeholder; the list returns to the
-  same page and event. The audit entry comes with `AuditLog` (M11).
+  same page and event. The audit entry (`event.rename`) is written by `AuditLog` (M11).
 - Event notes (app, `web.page.EventEditor`, routed by `ServicePage`; `HistoryStore.addNote` / `editNote` /
   `deleteNote`, which share the rename's write-then-undo-on-failure path): plain form POSTs with `csrf` and `next` to
   `/service/{id}/event/{eventId}/notes` (add: `text`, `visibility`, default `private`),
@@ -1551,7 +1551,7 @@ them; see CLAUDE.md.
   `next` the redirect goes to the event permalink (`#note-{id}`). Forms appear for users with `events.annotate` in the
   list view, on the permalink page and in the day details (day page, `?day=` panel and popover, which return to
   `?day={date}`); `app.js` asks before deleting (`data-confirm`) and opens the event's `<details>` for an
-  `#event-`/`#note-` fragment. The audit entry comes with `AuditLog` (M11).
+  `#event-`/`#note-` fragment. The audit entries (`note.add`/`note.edit`/`note.delete`) are written by `AuditLog` (M11).
 - `EndpointStore` (app, package `config`): `{dataDir}/endpoints.json` is `{"version", "categories": [{"id", "name",
   "description"?}], "endpoints": [...]}`; endpoint entries have the same keys as in `config.json` and are stored as
   entered (no `${env:…}` substitution), so `defaults` apply to whatever they leave out. Both are parsed by the same
@@ -1650,3 +1650,29 @@ them; see CLAUDE.md.
   Restarting without removing the config entry is the existing "defined in both" startup error. Pending copies are
   marked in the services list and the layout editor. Copied entries go after the file's other entries, so with no saved
   layout an endpoint's default position moves to after the config endpoints.
+- Audit log (app, `audit.AuditLog`, `web.page.AuditPage`, `web.page.Audits`): `data/audit.jsonl`, one JSON object per
+  line: `time`, `user` (id; `null` when nobody is signed in), `userName` (display name at the time), `action`, `id`,
+  `before`, `after` (`null` for none, e.g. on create/delete). Each entry is appended and forced to disk; a line cut
+  short by a crash is skipped when reading, and the next entry starts on a new line. A failed audit write is logged and
+  doesn't undo the change (it's already saved). The editors record after a successful write, holding the store's lock
+  (`synchronized` on the `EndpointStore`/`LayoutStore`/`HistoryStore`, whose writes are synchronized on themselves) so
+  `before` is exactly what the write replaced; refused edits (403, 409, 400) write nothing. Actions and values:
+  `layout.save` / `layout.reset` (id `layout`; the saved layout, `before` `null` when there was none),
+  `layout.move-to-other` (id = deleted category; written by a category delete that changed the saved layout),
+  `event.rename` (`{endpoint}/{event}`; `{"title"}`, `null` = default), `note.add` / `note.edit` / `note.delete`
+  (`{endpoint}/{event}/{note}`; author, createdAt, editedAt, visibility, text), `endpoint.create` / `endpoint.edit` /
+  `endpoint.delete` (the stored dashboard entry), `endpoint.history.delete` (no values), `category.create` /
+  `category.edit` / `category.delete` (the category entry), `endpoint.copy` / `category.copy` and their `.cancel` (the
+  entry **as written in `config.json`**, so `${env:…}` values substituted into the stored copy never reach the log),
+  and `login.failed` (failed built-in sign-in, which the M9 login decision deferred to here: id = client address, never
+  the username or password; rate-limited attempts aren't recorded, which bounds the log). Masking is applied to every
+  entry: a non-null value under a key whose name (lowercased, without `-`/`_`/`.`) contains `password`, `passwd`,
+  `passphrase`, `secret`, `token`, `apikey`, `accesskey`, `privatekey`, `credential`, `authorization`, `webhook` or
+  `cookie` becomes `"***"` (whole objects/arrays too), and in any other string the password of a URL's user info
+  (`scheme://user:pw@`) does. Plugins can't mark a setting secret (the API has no flag), so plugin authors should name
+  secret settings accordingly. `GET /admin/audit` shows 50 entries per page, newest first (`?page=N`, 0 = newest;
+  invalid or past-the-end pages are `404`), times in the configured timezone, before/after as pretty JSON in a
+  `<details>`, `no-store`, can't be framed. It needs `audit.view` **and** `view.private` (entries show private
+  services, targets and private notes), like the editors; anonymous visitors go to `/login`, others get `403`. The main
+  page shows an "Audit log" link to users who may open it. The file is read whole for each page view (edits are rare;
+  no rotation in v1). M12 (maintenance) and M13 (rejected OIDC logins) add their own actions.

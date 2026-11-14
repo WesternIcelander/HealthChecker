@@ -8,6 +8,7 @@ import io.siggi.healthchecker.api.CheckPlugin;
 import io.siggi.healthchecker.api.CheckResult;
 import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.api.SettingSpec;
+import io.siggi.healthchecker.audit.AuditLog;
 import io.siggi.healthchecker.auth.ActionRateLimiter;
 import io.siggi.healthchecker.auth.Permission;
 import io.siggi.healthchecker.auth.Permissions;
@@ -94,6 +95,7 @@ public final class EndpointEditor {
     private final ActionRateLimiter testLimiter;
     private final OneOffCheck oneOffCheck;
     private final HistoryStore history;
+    private volatile AuditLog audit = AuditLog.disabled();
 
     /** "Test now" runs per user within {@link #TEST_WINDOW}. */
     public static final int TEST_LIMIT = 10;
@@ -120,6 +122,12 @@ public final class EndpointEditor {
         this.store = store;
         this.plugins = plugins;
         this.config = config;
+    }
+
+    /** Records endpoint changes, deletions and copies in {@code audit}. */
+    public EndpointEditor audit(AuditLog audit) {
+        this.audit = audit;
+        return this;
     }
 
     public void register(WebServer server) {
@@ -203,8 +211,18 @@ public final class EndpointEditor {
             if (post) {
                 if (!sessions.requireCsrf(request)) return;
                 String id = rest;
+                // Recorded as written in config.json, so substituted ${env:…} values stay out of the log.
+                JsonObject written = config.endpointEntries().containsKey(id)
+                        ? config.endpointEntries().get(id).written() : stored.get().entry();
                 String[] failed = CopyToDashboard.submit(request, site, PATH + "/" + id + "/copy",
-                        version -> store.copyEndpoint(version, id), version -> store.cancelEndpointCopy(version, id));
+                        version -> {
+                            store.copyEndpoint(version, id);
+                            Audits.record(audit, permissions, request, "endpoint.copy", id, null, written);
+                        },
+                        version -> {
+                            store.cancelEndpointCopy(version, id);
+                            Audits.record(audit, permissions, request, "endpoint.copy.cancel", id, written, null);
+                        });
                 if (failed != null) copyPage(request, site, failed[0], stored.get(), null, failed[1]);
             } else {
                 copyPage(request, site, "200 OK", stored.get(), CopyToDashboard.notice(request), null);
@@ -278,7 +296,14 @@ public final class EndpointEditor {
         }
         int version = parseVersion(form.get("version"));
         try {
-            store.putEndpoint(version, entry);
+            // Under the store's lock, so "before" is what the save replaced.
+            synchronized (store) {
+                JsonObject before = store.endpoint(id).filter(e -> e.source() == EndpointStore.Source.DASHBOARD)
+                        .map(EndpointStore.StoredEndpoint::entry).orElse(null);
+                EndpointStore.StoredEndpoint saved = store.putEndpoint(version, entry);
+                Audits.record(audit, permissions, request, existing == null ? "endpoint.create" : "endpoint.edit", id,
+                        before, saved.entry());
+            }
         } catch (EndpointStore.InvalidEntryException e) {
             formPage(request, site, "400 Bad Request", existing, form, Errors.of(e.errors(), knownKeys(form.get("type"))), null);
             return;
@@ -325,6 +350,7 @@ public final class EndpointEditor {
         }
         try {
             store.removeEndpoint(parseVersion(version), id);
+            Audits.record(audit, permissions, request, "endpoint.delete", id, existing.entry(), null);
         } catch (EndpointStore.VersionConflictException e) {
             deletePage(request, site, "409 Conflict", existing, Integer.toString(e.currentVersion()),
                     "Someone else changed the services in the meantime (now version " + e.currentVersion()
@@ -343,7 +369,9 @@ public final class EndpointEditor {
         }
         if (deleteHistory) {
             try {
-                history.deleteHistory(id);
+                if (history.deleteHistory(id)) {
+                    Audits.record(audit, permissions, request, "endpoint.history.delete", id, null, null);
+                }
             } catch (IOException | RuntimeException e) {
                 System.getLogger(EndpointEditor.class.getName()).log(System.Logger.Level.ERROR,
                         "Deleting the history of " + id + " failed", e);
