@@ -4,10 +4,12 @@ import io.siggi.healthchecker.auth.PasswordHasher;
 import io.siggi.healthchecker.config.Config;
 import io.siggi.healthchecker.config.ConfigLoadException;
 import io.siggi.healthchecker.config.ConfigLoader;
+import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.plugin.PluginLoadException;
 import io.siggi.healthchecker.plugin.PluginManager;
 
 import java.io.Console;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -93,6 +95,14 @@ public final class Main {
                 err.println(configFile + ": " + new ConfigLoadException(endpointErrors, List.of()).getMessage());
                 return EXIT_ERROR;
             }
+            HistoryStore history;
+            try {
+                history = HistoryStore.open(config.dataDir());
+            } catch (IOException e) {
+                err.println("Couldn't load history: " + e.getMessage());
+                return EXIT_ERROR;
+            }
+            out.println("Loaded history of " + history.endpointIds().size() + " endpoint(s) from " + config.dataDir());
             out.println("Loaded " + configFile + ": " + config.endpoints().size() + " endpoint(s), "
                     + config.categories().size() + " categor" + (config.categories().size() == 1 ? "y" : "ies") + ".");
             // Scheduling and the web server are started here in later milestones.

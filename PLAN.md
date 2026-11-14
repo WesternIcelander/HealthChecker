@@ -1051,7 +1051,7 @@ test list are build, docs or manual steps.
 - [x] `EndpointRegistry` with runtime add / update-in-place / replace-checker / remove; `CheckScheduler` follows it (per-endpoint schedule, jitter, virtual threads, enforced timeout, skip-if-stuck). **Tests:** plugin that throws; hangs; ignores interrupts (skip-if-stuck); endpoint added/replaced/removed while running (old checker closed, no stray runs).
 
 ### M5 — History store & uptime
-- [ ] `HistoryStore`: coverage periods with minute heartbeat; events (open/close, `start` = first failure of streak); yearly JSONL files; atomic writes; load at startup. Restart handling: close open events as `endedUnobserved`; coverage gap while app was down. **Tests:** write/read round trip; restart while down; restart while up leaves a gap; crash mid-write leaves the previous file intact.
+- [x] `HistoryStore`: coverage periods with minute heartbeat; events (open/close, `start` = first failure of streak); yearly JSONL files; atomic writes; load at startup. Restart handling: close open events as `endedUnobserved`; coverage gap while app was down. **Tests:** write/read round trip; restart while down; restart while up leaves a gap; crash mid-write leaves the previous file intact.
 - [ ] `UptimeCalculator`: exact downtime ∩ coverage for 24 h, 60 d and any day in the configured timezone; "no data" handling; never round up to 100 %; per-day cache. **Tests:** event across midnight split between days; DST transition day (23 h / 25 h); no-coverage days; partial coverage; rounding (99.995 % → 99.99 %); cache invalidated on event change.
 
 ### M6 — Public main page & status API
@@ -1256,3 +1256,18 @@ them; see CLAUDE.md.
   checker is closed when that check returns, or after the grace period at the latest (logged).
   `close()` stops everything, waits up to the grace period, and closes every checker. `run` doesn't
   start the scheduler yet; that comes with the web server and shutdown handling.
+- `HistoryStore` (app, package `history`): a coverage period starts at the first check recorded
+  for an endpoint, is extended by each check (to its end) and by the minute heartbeat (to now),
+  and ends on `stopMonitoring` (endpoint removed/replaced) or `close()` (final heartbeat). Loaded
+  periods are all closed, so a restart leaves a gap from the last heartbeat to the first new check.
+  Events also store `lastFailureAt` (time of the last failed check); opening and closing an event
+  is written at once, while `lastFailureAt`/`lastFailureMessage` of an ongoing event and coverage
+  are written by the heartbeat. Events open at load are closed at `lastFailureAt` with
+  `endedUnobserved` and written back; `stopMonitoring` closes an open event the same way. Events
+  go into `events/{yyyy}.jsonl` by the UTC year of `start`; enums are lowercase, timestamps
+  ISO-8601 UTC, nulls omitted. A malformed file, an event in the wrong year file or endpoint
+  directory, or a duplicate event id is a startup error naming the file (no silent skipping, so
+  a rewrite can't drop data). Atomic writes go through `AtomicFiles` (temp file in the same
+  directory, fsync, atomic rename); leftover `.{name}.*.tmp` files are deleted at load. A failed
+  write is logged and retried on the next heartbeat. `run` loads the history after validating
+  endpoints (startup error if it can't).
