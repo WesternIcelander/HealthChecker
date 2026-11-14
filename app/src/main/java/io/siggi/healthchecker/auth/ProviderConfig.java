@@ -105,6 +105,25 @@ public record ProviderConfig(String id, Type type, String label, String clientId
         return value(userinfo.get(nameField)).filter(v -> !v.isBlank());
     }
 
+    /**
+     * A name for the signed-in person, as the provider gave it: {@code oauth2} the {@code nameField} value;
+     * {@code oidc} the {@code name} claim, else {@code preferred_username}. Only a hint (not unique, not verified).
+     */
+    public Optional<String> nameHint(JsonObject attributes) {
+        if (attributes == null) return Optional.empty();
+        if (type == Type.OAUTH2) return displayName(attributes).filter(ProviderConfig::validValue);
+        return value(attributes.get("name")).filter(v -> !v.isBlank() && validValue(v))
+                .or(() -> value(attributes.get("preferred_username")).filter(v -> !v.isBlank() && validValue(v)));
+    }
+
+    /** The {@code email} claim or userinfo field, verified or not: only a hint shown to the person themselves. */
+    public Optional<String> emailHint(JsonObject attributes) {
+        if (attributes == null || !(attributes.get("email") instanceof JsonPrimitive p) || !p.isString()) {
+            return Optional.empty();
+        }
+        return Optional.of(p.getAsString()).filter(v -> !v.isBlank() && validValue(v));
+    }
+
     /** Whether the provider is offered on this site ({@code null} = the default site). */
     public boolean availableOn(SiteConfig site) {
         if (sites.isEmpty()) return true;

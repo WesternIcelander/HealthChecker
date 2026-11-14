@@ -49,6 +49,10 @@ public final class SessionManager {
 
     static final String KEY_USER = "user";
     static final String KEY_CSRF = "csrf";
+    /** For a session a rule granted: the rule's {@link Rule#key()}. */
+    static final String KEY_RULE = "rule";
+    /** For a session a rule granted: the display name from the provider. */
+    static final String KEY_NAME = "name";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Sessions sessions;
@@ -113,9 +117,46 @@ public final class SessionManager {
      * new CSRF token is started. Must be called before the response headers are sent.
      */
     public void login(HTTPRequest request, String userId) {
+        login(request, userId, null, null);
+    }
+
+    /**
+     * {@link #login(HTTPRequest, String)} for a user signed in through an OIDC/OAuth provider.
+     *
+     * @param rule        the rule that granted access ({@code userId} is then the identifier), or {@code null}
+     * @param displayName for a rule, the name from the provider; ignored otherwise
+     */
+    public void login(HTTPRequest request, String userId, Rule rule, String displayName) {
         try (SessionHandle session = sessions.resetSession(request)) {
             session.set(KEY_USER, userId);
             session.set(KEY_CSRF, newToken());
+            if (rule != null) {
+                session.set(KEY_RULE, rule.key());
+                session.set(KEY_NAME, displayName);
+            }
+        } finally {
+            fixCookies(request);
+        }
+    }
+
+    /**
+     * Stores values in the request's session, starting one if needed (which sets the session cookie), so call
+     * it once per request (a second call on a request without a session would start another one) and before the
+     * response headers are sent.
+     */
+    public void put(HTTPRequest request, Map<String, String> values) {
+        try (SessionHandle session = sessions.openSession(request)) {
+            values.forEach(session::set);
+        } finally {
+            fixCookies(request);
+        }
+    }
+
+    /** Removes a value from the request's session and returns it ({@code null} without a session or value). */
+    public String take(HTTPRequest request, String key) {
+        if (read(request).get(key) == null) return null;
+        try (SessionHandle session = sessions.openSession(request)) {
+            return session.set(key, null);
         } finally {
             fixCookies(request);
         }

@@ -1105,7 +1105,7 @@ test list are build, docs or manual steps.
 - [x] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
 - [x] OIDC: discovery, PKCE, state, nonce, code exchange, JWKS cache, `id_token` verification with SimpleJWT. **Tests:** with an in-process fake OIDC provider (SiggiHTTP + test RSA key): success; bad signature; wrong `aud`/`iss`; expired; nonce/state mismatch; `alg: none` rejected; unknown `kid` triggers a JWKS refresh.
 - [x] Generic `oauth2`: code flow (+PKCE where supported), userinfo, `idField`/`nameField`. **Tests:** fake OAuth2 provider: success; userinfo missing `idField` fails cleanly.
-- [ ] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
+- [x] Identity → user lookup, then rules (first match); "send this identifier to the admin" page (copy button, different-account link, no session); rejected attempts logged and audited, rate-limited; login page with provider buttons; local form hidden when disabled. **Tests:** unknown identity shows its exact identifier and creates no session; `email` identifier ignored when not verified; rule grants role; explicit user beats rule; disabled user gets the disabled page; rejected attempt appears in the audit log.
 - [ ] Per-site callback URLs from the site's `publicBaseUrl`; provider `sites` restriction. **Tests:** callback URL per site; provider hidden and rejected on sites it isn't enabled for.
 
 ### M14 — Notifications: framework, reminders & Discord
@@ -1825,3 +1825,29 @@ them; see CLAUDE.md.
   `userinfo has no usable "…"`; `nameField` gives an optional display-name hint. Same HTTP rules and `OidcException`
   (log-only messages) as the OIDC flow, sharing its helpers; requests send `User-Agent: HealthChecker` (GitHub's API
   requires one).
+- Identity resolution and provider sign-in pages (app, `auth.Rule`, `auth.SignInMatch`, `auth.ExternalLogin`,
+  `UserDirectory.resolve`, `web.page.ProviderLoginPage`): the identifier is looked up in the users' `identities` first
+  (an explicit user always wins, and a disabled one gets the disabled page even when a rule would match), then
+  `auth.rules` in order. Rule keys: `provider` and `role` (both must be known), plus at least one condition, so a rule
+  never admits everyone with an account at a provider: `emailDomain` (exact domain after the last `@`,
+  case-insensitive, no subdomains, only with `email_verified` true, and only on `oidc` providers, since plain OAuth 2.0
+  userinfo doesn't say whether an address is verified) and/or `group` (the `groups` claim/userinfo field is that string
+  or an array containing it); anything else is an unknown-key error. A rule-granted session stores the identifier as
+  its user id (it contains a `:`, so it can't clash with a user id), the rule's key (provider, conditions, role name)
+  and the provider's display name (`nameField`; OIDC `name`, else `preferred_username`; else the identifier); on each
+  request it's valid only while a rule with the same key exists and no user lists the identifier, so a config change
+  ends it at restart. `GET /auth/start/{id}?next=` keeps the started flow (`ExternalLogin` stores the flow's `Pending`
+  as JSON) and `next` in the visitor's session (one write, so only one session is started) and answers `303` to the
+  provider; `switch=1` (the "Sign in with a different account" link) adds `prompt=select_account` for OIDC. The
+  callback URL is `site.link("/auth/callback/{id}")`; a provider is offered on a site (button, start, callback) only
+  when it's available there and the site has a base URL, else `404` (per-site tests come with the next step).
+  `GET /auth/callback/{id}` takes the pending flow out of the session first (single use), then: allowed → new session
+  (`resetSession`), `303` to `next`; unknown or disabled → the session is deleted (so none is left, not even someone
+  else's on that browser) and a `403` page shows the provider label, the name/email hint, the identifier in a `<code>`
+  with a Copy button (shown only when the Clipboard API exists), the different-account link, and nothing about users,
+  roles or rules; a flow failure or no usable identifier (e.g. `identifyBy: email` with an unverified address) → a
+  short `400` page, details only in the log. Rejected attempts are logged and recorded as `login.rejected` (id = the
+  identifier, user `null`; `after`: provider, identifier, displayName, email, ip, reason `unknown`/`disabled`), at most
+  5 per identifier per hour (in memory); the page is shown every time. `/login` shows a "Sign in with …" link per
+  offered provider (`rel=nofollow`, carrying `next`); with `auth.local.enabled: false` the password form is left out,
+  and with neither, the page says no sign-in method is available.

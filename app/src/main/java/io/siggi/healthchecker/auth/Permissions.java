@@ -15,7 +15,8 @@ import java.util.function.Function;
  * The one place responders ask who is signed in and what they may do.
  * <ul>
  *   <li>The session stores only the user id; the user (and so their role and permissions) is looked
- *       up fresh on every request.</li>
+ *       up fresh on every request. A session granted by a rule ({@code auth.rules}) stores the identifier, the
+ *       rule's key and the provider's display name, and is checked against the current rules.</li>
  *   <li>A session whose user is disabled or no longer configured is ended (deleted, cookie cleared)
  *       on that request, which then counts as anonymous.</li>
  *   <li>{@link #viewer} gives the pages' {@link Viewer}: {@code view.private} decides the data view, so
@@ -29,11 +30,28 @@ public final class Permissions {
 
     private final SessionManager sessions;
     private final Function<String, Optional<User>> users;
+    private final RuleUsers ruleUsers;
+
+    /** Looks up the user of a session a rule granted ({@link UserDirectory#ruleUser}). */
+    @FunctionalInterface
+    public interface RuleUsers {
+        Optional<User> ruleUser(String identifier, String ruleKey, String displayName);
+    }
 
     /** @param users looks a user up by id ({@link UserDirectory#user}) */
     public Permissions(SessionManager sessions, Function<String, Optional<User>> users) {
+        this(sessions, users, (identifier, ruleKey, displayName) -> Optional.empty());
+    }
+
+    /** Users and rule-granted sessions from {@code directory}. */
+    public Permissions(SessionManager sessions, UserDirectory directory) {
+        this(sessions, directory::user, directory::ruleUser);
+    }
+
+    public Permissions(SessionManager sessions, Function<String, Optional<User>> users, RuleUsers ruleUsers) {
         this.sessions = sessions;
         this.users = users;
+        this.ruleUsers = ruleUsers;
     }
 
     /** The signed-in user and their session's CSRF token. */
@@ -52,7 +70,10 @@ public final class Permissions {
         SessionHandle session = sessions.read(request);
         String id = session.get(SessionManager.KEY_USER);
         if (id == null) return Optional.empty();
-        Optional<User> user = users.apply(id);
+        String rule = session.get(SessionManager.KEY_RULE);
+        Optional<User> user = rule != null
+                ? ruleUsers.ruleUser(id, rule, session.get(SessionManager.KEY_NAME))
+                : users.apply(id);
         if (user.isEmpty() || user.get().disabled()) {
             LOG.log(System.Logger.Level.INFO, "Ended a session of " + (user.isEmpty() ? "an unknown" : "a disabled")
                     + " user");

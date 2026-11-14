@@ -539,6 +539,18 @@ h2.day-title { font-size: 1.4rem; }
   cursor: pointer;
 }
 .form-error { color: var(--down); font-weight: 600; }
+.login-or { text-align: center; color: var(--muted); margin: 16px 0 8px; }
+.login-providers { display: flex; flex-direction: column; gap: 8px; }
+.login-providers .provider-button { text-align: center; padding: 8px 14px; }
+.signin-rejected .identifier { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.signin-rejected code {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.signin-rejected .copy-button { margin-top: 0; padding: 4px 12px; }
 
 /* ---- layout editor ---- */
 

@@ -278,7 +278,7 @@ class LoginPageTest {
         start(false, null);
         HttpResponse<String> r = get("/login");
         assertEquals(200, r.statusCode());
-        assertTrue(r.body().contains("Password sign-in is disabled."));
+        assertTrue(r.body().contains("No sign-in method is available here."));
         assertFalse(r.body().contains("type=\"password\""));
         assertEquals(null, cookie(r), "no form, no session");
         assertEquals(404, post("/login", "username=alice&password=x").statusCode());

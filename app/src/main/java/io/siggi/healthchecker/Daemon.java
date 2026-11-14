@@ -2,6 +2,8 @@ package io.siggi.healthchecker;
 
 import io.siggi.healthchecker.api.ConfigException;
 import io.siggi.healthchecker.audit.AuditLog;
+import io.siggi.healthchecker.auth.AuthProviders;
+import io.siggi.healthchecker.auth.ExternalLogin;
 import io.siggi.healthchecker.auth.LocalLogin;
 import io.siggi.healthchecker.auth.LoginRateLimiter;
 import io.siggi.healthchecker.auth.Permissions;
@@ -32,6 +34,7 @@ import io.siggi.healthchecker.web.page.EventEditor;
 import io.siggi.healthchecker.web.page.CategoryEditor;
 import io.siggi.healthchecker.web.page.LayoutEditor;
 import io.siggi.healthchecker.web.page.LoginPage;
+import io.siggi.healthchecker.web.page.ProviderLoginPage;
 import io.siggi.healthchecker.web.page.MaintenancePage;
 import io.siggi.healthchecker.web.page.MaintenanceViews;
 import io.siggi.healthchecker.web.page.ServicePage;
@@ -149,12 +152,15 @@ final class Daemon implements AutoCloseable {
                 web.trustedProxies());
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
         UserDirectory users = UserDirectory.parse(config.auth());
-        Permissions permissions = new Permissions(sessions, users::user);
+        Permissions permissions = new Permissions(sessions, users);
+        AuthProviders providers = AuthProviders.parse(config.auth(), config.server(), config.sites());
         AuditPage auditPage = new AuditPage(sites, permissions, audit, config.timezone());
         auditPage.register(web);
         new LoginPage(sites, sessions, permissions,
                 new LocalLogin(LocalLogin.enabled(config.auth()), users.credentials(), new LoginRateLimiter()),
-                web.trustedProxies()).audit(audit).register(web);
+                web.trustedProxies()).audit(audit).providers(providers).register(web);
+        new ProviderLoginPage(sites, sessions, users, providers, ExternalLogin.standard(), web.trustedProxies(), clock)
+                .audit(audit).register(web);
         LayoutEditor layoutEditor = new LayoutEditor(sites, permissions, sessions, layout,
                 endpoints::categoryConfigs, endpoints::definitions).audit(audit);
         layoutEditor.register(web);

@@ -400,8 +400,30 @@
     });
   }
 
+  // Copy buttons ([data-copy] names the element whose text is copied); hidden without the Clipboard API.
+  function initCopyButtons() {
+    if (!navigator.clipboard) return;
+    var buttons = document.querySelectorAll("button[data-copy]");
+    for (var i = 0; i < buttons.length; i++) {
+      (function (button) {
+        var source = document.getElementById(button.getAttribute("data-copy"));
+        if (!source) return;
+        button.hidden = false;
+        button.addEventListener("click", function () {
+          navigator.clipboard.writeText(source.textContent).then(function () {
+            button.textContent = "Copied";
+            setTimeout(function () { button.textContent = "Copy"; }, 2000);
+          }, function () {
+            button.textContent = "Copy failed";
+          });
+        });
+      })(buttons[i]);
+    }
+  }
+
   function init() {
     document.documentElement.classList.add("js");
+    initCopyButtons();
     initEventEdits();
     initTooltips();
     initDayPopover();

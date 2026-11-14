@@ -1,7 +1,9 @@
 package io.siggi.healthchecker.web.page;
 
 import io.siggi.healthchecker.audit.AuditLog;
+import io.siggi.healthchecker.auth.AuthProviders;
 import io.siggi.healthchecker.auth.LocalLogin;
+import io.siggi.healthchecker.auth.ProviderConfig;
 import io.siggi.healthchecker.auth.Permissions;
 import io.siggi.healthchecker.auth.SessionManager;
 import io.siggi.healthchecker.web.Html;
@@ -14,6 +16,7 @@ import io.siggi.http.HTTPRequest;
 import java.net.InetAddress;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -21,7 +24,8 @@ import java.util.Optional;
  * {@code /login} and {@code /logout}.
  * <ul>
  *   <li>{@code GET /login} shows the password form (with a CSRF token, which starts a pre-login
- *       session), or, when already signed in, who is signed in and a sign-out button.</li>
+ *       session; left out when {@code auth.local.enabled} is false) and a "Sign in with …" button per
+ *       provider offered on the site, or, when already signed in, who is signed in and a sign-out button.</li>
  *   <li>{@code POST /login} needs the CSRF token ({@code 403} without it), then answers {@code 303}
  *       to {@code next} on success (with a new session ID), {@code 401} with the form for a wrong
  *       username or password, and {@code 429} with {@code Retry-After} while rate limited.</li>
@@ -46,6 +50,13 @@ public final class LoginPage {
     }
 
     private volatile AuditLog audit = AuditLog.disabled();
+    private volatile AuthProviders providers;
+
+    /** Shows a "Sign in with …" button for each provider offered on the site ({@link ProviderLoginPage}). */
+    public LoginPage providers(AuthProviders providers) {
+        this.providers = providers;
+        return this;
+    }
 
     /** Records failed sign-ins (with the client address only) in {@code audit}. */
     public LoginPage audit(AuditLog audit) {
@@ -165,8 +176,19 @@ public final class LoginPage {
                     .append("<input id=\"login-password\" name=\"password\" type=\"password\"")
                     .append(" autocomplete=\"current-password\" required>\n")
                     .append("<button type=\"submit\">Sign in</button>\n</form>\n");
-        } else {
-            html.append("<p class=\"muted\">Password sign-in is disabled.</p>\n");
+        }
+        List<ProviderConfig> offered = ProviderLoginPage.offeredOn(providers, site);
+        if (!offered.isEmpty()) {
+            if (local.enabled()) html.append("<p class=\"login-or\">or</p>\n");
+            html.append("<div class=\"login-providers\">\n");
+            for (ProviderConfig provider : offered) {
+                html.append("<a class=\"button provider-button\" rel=\"nofollow\" href=\"")
+                        .append(Html.escape(ProviderLoginPage.startLink(site, provider, next, false)))
+                        .append("\">Sign in with ").append(Html.escape(provider.label())).append("</a>\n");
+            }
+            html.append("</div>\n");
+        } else if (!local.enabled()) {
+            html.append("<p class=\"muted\">No sign-in method is available here.</p>\n");
         }
         html.append("</section>\n");
         PageSupport.foot(html, site);
