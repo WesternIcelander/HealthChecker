@@ -100,7 +100,7 @@ public interface CheckPlugin {
 public record SettingSpec(String key, String label, Kind kind, boolean required,
                           Object defaultValue, String help, List<String> choices) {
     public enum Kind { STRING, INTEGER, BOOLEAN, STRING_LIST, CHOICE }
-    // builder-style factories: SettingSpec.string("host", "Host").required().help("…") …
+    // builder-style factories: SettingSpec.string("host", "Host").asRequired().help("…") …
 }
 
 /** One per endpoint. Called from one thread at a time, never concurrently. */
@@ -1039,7 +1039,7 @@ test list are build, docs or manual steps.
 - [x] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
 
 ### M2 — Plugin API & loading
-- [ ] API module: `CheckPlugin` (incl. `displayName`, `settings`, `apiVersion`), `SettingSpec`, `Checker`, `CheckResult`, `EndpointConfig` (incl. `declareTarget`), `ConfigException` (with optional setting key). **Tests:** `CheckResult`/`SettingSpec` builders.
+- [x] API module: `CheckPlugin` (incl. `displayName`, `settings`, `apiVersion`), `SettingSpec`, `Checker`, `CheckResult`, `EndpointConfig` (incl. `declareTarget`), `ConfigException` (with optional setting key). **Tests:** `CheckResult`/`SettingSpec` builders.
 - [ ] `EndpointConfig` implementation over `JsonObject` with unknown-key detection. **Tests:** typed getters; missing required key; wrong type; unread keys reported.
 - [ ] `PluginManager`: built-ins + `plugins/*.jar`, duplicate/unknown type errors, version check. **Tests:** load a test plugin jar built during the test from a temp dir (using Gson from the parent loader); duplicate types; unknown type message lists available types; too-new API rejected.
 
@@ -1199,3 +1199,11 @@ them; see CLAUDE.md.
   there's no console. Until later milestones, `run` only loads and validates the config.
 - `config.example.json` uses `${env:…}` for every secret, including client ids and the
   password hash, so it loads only when those variables are set.
+- Plugin API details: `SettingSpec`'s modifiers (`asRequired()`, `defaultValue(v)`, `help(t)`)
+  return copies; the "required" modifier is `asRequired()` because `required()` is the record
+  accessor. A default must fit the kind (`String`, `Integer`, `Boolean`, `List<String>`, or one
+  of the choices); only `CHOICE` has choices, and it needs at least one. `CheckResult` turns a
+  `null` message into `""`, keeps details in insertion order, makes them immutable, and rejects
+  values other than `String`/`Number`/`Boolean`. `EndpointConfig` getters throw
+  `ConfigException` (with the key) for missing or wrongly typed values.
+  `ConfigException.settingKey()` returns an `Optional<String>`.
