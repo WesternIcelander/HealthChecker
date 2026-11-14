@@ -75,7 +75,8 @@ final class ServiceApi {
         Service service = found.get();
         Header header = pages.header(service);
         EndpointView view = service.view();
-        JsonObject json = JsonViews.endpoint(view, header.day(), header.sixtyDays(), header.days(), dashboard);
+        JsonObject json = JsonViews.endpoint(view, header.day(), header.sixtyDays(), header.days(), dashboard,
+                header.maintenanceDays());
         JsonArray checks = new JsonArray();
         for (CheckView check : view.recentChecks()) {
             checks.add(JsonViews.check(check));
@@ -102,7 +103,8 @@ final class ServiceApi {
         Optional<Service> found = pages.service(request, id);
         if (found.isEmpty()) return;
         request.allowedMethods("GET");
-        EventPage page = pages.events(found.get(), ServicePage.pageNumber(request.get().get("page")));
+        EventPage page = pages.events(found.get(), ServicePage.pageNumber(request.get().get("page")),
+                ServicePage.EventFilter.parse(request.get().get("filter")));
         JsonObject json = new JsonObject();
         json.addProperty("page", page.page());
         json.addProperty("pages", page.pages());
@@ -143,7 +145,8 @@ final class ServiceApi {
         JsonObject json = new JsonObject();
         json.addProperty("from", from.toString());
         json.addProperty("to", to.toString());
-        json.add("days", JsonViews.days(pages.days(found.get(), from, to), dashboard));
+        json.add("days", JsonViews.days(pages.days(found.get(), from, to), dashboard,
+                pages.maintenanceDays(found.get().endpoint().id(), from, to)));
         write(request, "200 OK", JsonViews.CONTENT_TYPE, JsonViews.GSON.toJson(json));
     }
 

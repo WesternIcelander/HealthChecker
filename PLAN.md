@@ -1099,7 +1099,7 @@ test list are build, docs or manual steps.
 - [x] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
 - [x] Recurrence: daily / weekly / monthly rules with `until`, DST-safe expansion in the configured timezone, skip/edit single occurrence, materialise occurrences when they start. **Tests:** weekly recurrence across a DST change keeps local time; "first Sunday" monthly; skip and edit one occurrence; editing a series doesn't change past occurrences.
 - [x] `MaintenanceScheduler`: start/end transitions; "End now" and "Extend"; affected endpoints show state `MAINTENANCE`. History integration: DOWN during a window → `kind: maintenance` event; split at window end into a normal `outage`; uptime excludes maintenance downtime unless `countsAsDowntime`. **Tests:** with a fake clock: transitions; end now; extend; down inside window → maintenance event, no outage; down past window end → outage starting at window end; uptime with and without `countsAsDowntime`.
-- [ ] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
+- [x] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
 
 ### M13 — OIDC / OAuth 2.0 login
 - [ ] Provider config + validation; `identifyBy` (`sub` default, verified `email`, other claim; `idField` for oauth2); identifier format `{providerId}:{value}`. **Tests:** config validation; identifier construction per mode.
@@ -1738,3 +1738,41 @@ them; see CLAUDE.md.
   change just changes kind. This applies at a window's start too (an outage ongoing when a window starts becomes
   maintenance from then on, symmetric to the end). A failure streak that began before the latest change and reaches
   DOWN after it is split the same way (a closed event of the earlier kind up to the change).
+- Maintenance in the dashboard (app, `web.page`: `MaintenanceViews`, `MaintenancePage`): `MaintenanceViews` decides what a
+  viewer sees: a window's affected list is the services it covers (endpoint ids, or their category in the current
+  effective layout) that are in the site scope and visible to the viewer, in layout order; a window with none is hidden
+  everywhere (`404` on its page and API). Only viewers with `view.private` also see windows that cover no existing
+  service at all (e.g. an empty category), so they can still be edited or cancelled. Cancelled windows are left out of
+  the box, the lists and the day colours, but their own page still answers. Raw endpoint/category ids, channels, the
+  creator and the rule are `view.private` only; notes follow their own visibility; there are no targets on windows.
+  Maintenance events keep `maintenanceId` privileged-only, so anonymous visitors get no link from an event to its window.
+- "Schedule maintenance" is a link (main page; service page with `?service={id}` preselected) to `/maintenance/new`, a
+  plain POST form (CSRF): title, description, start/end as `datetime-local` in the configured timezone, services and
+  whole categories as checkboxes (`endpoint.{id}`, `category.{id}`), announcement channels (`channel.{name}`, shown to
+  `view.private` only), and a repeat rule (none, daily, weekly with weekdays, monthly by day or by "n-th weekday", optional
+  until). Only the services/categories the viewer can see in scope can be picked; on edit, ids they can't see are kept
+  as they were, and any other unknown id is `400`. A time field left showing the stored value (minutes only) keeps the
+  stored instant. Errors re-render the form with `400`; a stale `version` is `409`. `/maintenance/{id}` shows status,
+  times, affected services, description and notes; with `maintenance.manage` also the edit form (`POST /maintenance/{id}`),
+  Cancel (scheduled), End now / Extend (in progress, via the scheduler so they apply at once), and for series the next
+  10 occurrences with Skip and the skipped dates with Restore (`/maintenance/{series}/occurrence/{date}/skip|restore|edit`;
+  a not-yet-stored occurrence's page edits it through its series). Notes: `/notes`, `/note/{id}`, `/note/{id}/delete`
+  with `events.annotate`, only on stored windows. Order of checks: rejected host / hidden window `404`, then the
+  permission (anonymous → `/login`, else `403`), then CSRF.
+- "Upcoming maintenance" box (main page under the banner, service page under the header for that service): windows in
+  progress or starting within `maintenance.upcomingDays`, with status, time range, affected services, and for managers
+  Edit and Cancel (Skip for an occurrence) buttons. Banner/overall: DOWN wins, then "Maintenance in progress"
+  (`overall: "MAINTENANCE"`, still `200`), then "Waiting for the first checks"; category summaries add
+  "{m} of {n} in maintenance" and a `maintenance` count. `/api/status` adds a top-level `maintenance` array (the box's
+  windows) and, per endpoint in a window, `maintenance: {id, title, start, end}`.
+- Days: a day with a (not cancelled) window covering the service is blue when it has no unplanned downtime, even if
+  nothing went down during the window (grey without data still wins); day JSON adds `"maintenance": true`. Future
+  calendar days with planned maintenance are blue-outlined links to their day page, which now answers for future days
+  that have maintenance (still `404` otherwise) and lists the windows ("Planned maintenance") apart from the events,
+  also on past days. List view: maintenance events get a "Planned" badge; `?filter=all|outages|maintenance` (also on
+  `/api/service/{id}/events`) filters before paging, and the paging links keep it.
+- `/api/maintenance?from=&to=`: without both, `[now, now + 30 days)` echoed as instants; otherwise inclusive dates in
+  the configured timezone (`from` defaults to today, `to` to `from` + 30 days), at most 400 days, else `400`. Windows by
+  start with `id`, `title`, `description`?, `status` (`scheduled`/`in_progress`/`completed`/`cancelled`), `start`, `end`,
+  `series`, `seriesId`/`occurrence` for occurrences and `affected` `[{id, name}]`; `/api/maintenance/{id}` (one-off,
+  occurrence or series) adds the visible `notes`.

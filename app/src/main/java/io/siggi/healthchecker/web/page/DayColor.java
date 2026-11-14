@@ -21,12 +21,20 @@ public enum DayColor {
     }
 
     public static DayColor of(DaySummary day, DashboardConfig colors) {
+        return of(day, colors, false);
+    }
+
+    /**
+     * @param plannedMaintenance whether a maintenance window affecting the service took place on the day
+     *                           (blue even when nothing went down during it)
+     */
+    public static DayColor of(DaySummary day, DashboardConfig colors, boolean plannedMaintenance) {
         OptionalLong hundredths = day.uptime().hundredths();
         if (hundredths.isEmpty()) {
             return GREY;
         }
         if (day.uptime().downtime().isZero()) {
-            return day.maintenanceEvents() > 0 ? BLUE : GREEN;
+            return day.maintenanceEvents() > 0 || plannedMaintenance ? BLUE : GREEN;
         }
         double percent = hundredths.getAsLong() / 100.0;
         if (percent < colors.redBelow()) return RED;

@@ -25,6 +25,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -53,6 +54,7 @@ public final class StatusPage {
     private final LayoutEditor editor;
     private volatile EndpointEditor endpointEditor;
     private volatile AuditPage auditPage;
+    private volatile MaintenancePage maintenance;
     private final CategoryGrouping grouping = new CategoryGrouping(new ViewFilter());
 
     /**
@@ -100,13 +102,27 @@ public final class StatusPage {
         this.auditPage = auditPage;
     }
 
+    /**
+     * Adds scheduled maintenance: the "Upcoming maintenance" box, blue days in the bars, the
+     * "Schedule maintenance" link for users who may use it, and the windows in {@code /api/status}.
+     */
+    public void maintenance(MaintenancePage maintenance) {
+        this.maintenance = maintenance;
+    }
+
     public void register(WebServer server) {
         server.register("/", this::page);
         server.register("/api/status", this::api);
     }
 
-    /** One visible service with its uptime figures. */
-    record Row(EndpointView view, Uptime day, Uptime sixtyDays, List<DaySummary> days) {
+    /**
+     * One visible service with its uptime figures.
+     *
+     * @param maintenanceDays days of the bar on which a maintenance window affecting it took place
+     * @param window          the maintenance window it's in, or {@code null}
+     */
+    record Row(EndpointView view, Uptime day, Uptime sixtyDays, List<DaySummary> days, Set<LocalDate> maintenanceDays,
+               MaintenanceViews.Visible window) {
     }
 
     /** One visible category with its rows. */
@@ -114,7 +130,8 @@ public final class StatusPage {
     }
 
     /** What both representations show: the site, the viewer's sections and the overall state. */
-    record Model(Site site, Viewer viewer, List<Section> sections, State overall, int down, int unknown) {
+    record Model(Site site, Viewer viewer, List<Section> sections, State overall, int down, int unknown,
+                 int maintenance, List<MaintenanceViews.Visible> upcoming) {
     }
 
     /** The model for the request, or empty when its host is rejected. */
@@ -130,19 +147,30 @@ public final class StatusPage {
         LocalDate first = today.minusDays(BAR_DAYS - 1);
         int down = 0;
         int unknown = 0;
+        int inMaintenance = 0;
+        MaintenancePage m = maintenance;
+        List<MaintenanceViews.Visible> upcoming = m == null ? List.of() : m.views().upcoming(viewer, site.get());
         List<Section> sections = new ArrayList<>(grouped.size());
         for (CategorySection category : grouped) {
             down += category.summary().down();
             unknown += category.summary().unknown();
+            inMaintenance += category.summary().maintenance();
             List<Row> rows = new ArrayList<>(category.services().size());
             for (EndpointView view : category.services()) {
+                Set<LocalDate> maintenanceDays = m == null ? Set.of() : m.views().days(view.id(), first, today);
+                MaintenanceViews.Visible window = null;
+                if (view.state() == State.MAINTENANCE) {
+                    String windowId = statuses.apply(view.id()).map(EndpointStatus::maintenanceId).orElse(null);
+                    window = upcoming.stream().filter(v -> v.window().id().equals(windowId)).findFirst().orElse(null);
+                }
                 rows.add(new Row(view, uptime.last24Hours(view.id()), uptime.last60Days(view.id()),
-                        uptime.days(view.id(), first, today)));
+                        uptime.days(view.id(), first, today), maintenanceDays, window));
             }
             sections.add(new Section(category, rows));
         }
-        State overall = down > 0 ? State.DOWN : unknown > 0 ? State.UNKNOWN : State.UP;
-        return Optional.of(new Model(site.get(), viewer, sections, overall, down, unknown));
+        State overall = down > 0 ? State.DOWN : inMaintenance > 0 ? State.MAINTENANCE
+                : unknown > 0 ? State.UNKNOWN : State.UP;
+        return Optional.of(new Model(site.get(), viewer, sections, overall, down, unknown, inMaintenance, upcoming));
     }
 
     // ---- HTML ----
@@ -164,8 +192,13 @@ public final class StatusPage {
         html.append("<p class=\"banner banner-").append(overall).append("\" role=\"status\">")
                 .append("<span class=\"dot state-").append(overall).append("\" aria-hidden=\"true\"></span>")
                 .append(Html.escape(bannerText(model))).append("</p>\n");
+        MaintenancePage m = maintenance;
         if (!model.viewer().anonymous()) {
             StringBuilder actions = new StringBuilder();
+            if (m != null && m.canManage(request)) {
+                actions.append("<a class=\"button\" href=\"")
+                        .append(Html.escape(site.link(MaintenancePage.PREFIX + "/new"))).append("\">Schedule maintenance</a> ");
+            }
             if (endpointEditor != null && endpointEditor.canManage(request)) {
                 actions.append("<a class=\"button\" href=\"")
                         .append(Html.escape(site.link(EndpointEditor.PATH + "/new"))).append("\">Add service</a> ")
@@ -183,6 +216,9 @@ public final class StatusPage {
             if (!actions.isEmpty()) {
                 html.append("<p class=\"page-actions\">").append(actions.toString().strip()).append("</p>\n");
             }
+        }
+        if (m != null) {
+            m.upcomingBox(html, site, model.upcoming(), request, model.viewer().csrfToken(), "/");
         }
         for (Section section : model.sections()) {
             CategorySection category = section.category();
@@ -237,13 +273,16 @@ public final class StatusPage {
                 .append("<span class=\"uptime\"><span class=\"label\">24h</span> ").append(Html.escape(row.day().format())).append("</span>")
                 .append("<span class=\"uptime\"><span class=\"label\">60d</span> ").append(Html.escape(row.sixtyDays().format())).append("</span>")
                 .append("</span></a>\n");
-        PageSupport.bar(html, site, service.id(), service.name(), row.days(), dashboard);
+        PageSupport.bar(html, site, service.id(), service.name(), row.days(), dashboard, row.maintenanceDays());
         html.append("</li>\n");
     }
 
     private static String bannerText(Model model) {
         if (model.down() > 0) {
             return model.down() == 1 ? "1 service down" : model.down() + " services down";
+        }
+        if (model.maintenance() > 0) {
+            return "Maintenance in progress";
         }
         if (model.unknown() > 0) {
             return "Waiting for the first checks";
@@ -270,9 +309,11 @@ public final class StatusPage {
             if (cs.name() != null) category.addProperty("name", cs.name());
             if (cs.description() != null) category.addProperty("description", cs.description());
             JsonObject summary = new JsonObject();
-            summary.addProperty("up", cs.summary().total() - cs.summary().down() - cs.summary().unknown());
+            summary.addProperty("up", cs.summary().total() - cs.summary().down() - cs.summary().unknown()
+                    - cs.summary().maintenance());
             summary.addProperty("down", cs.summary().down());
             summary.addProperty("unknown", cs.summary().unknown());
+            if (maintenance != null) summary.addProperty("maintenance", cs.summary().maintenance());
             category.add("summary", summary);
             JsonArray services = new JsonArray();
             for (Row row : section.rows()) {
@@ -282,11 +323,28 @@ public final class StatusPage {
             categories.add(category);
         }
         root.add("categories", categories);
+        if (maintenance != null) {
+            JsonArray windows = new JsonArray();
+            for (MaintenanceViews.Visible v : model.upcoming()) {
+                windows.add(MaintenancePage.windowJson(v, model.viewer(), maintenance.views().now(), false));
+            }
+            root.add("maintenance", windows);
+        }
         write(request, model.overall() == State.DOWN ? "503 Service Unavailable" : "200 OK",
                 JsonViews.CONTENT_TYPE, JsonViews.GSON.toJson(root));
     }
 
     private JsonObject endpointJson(Row row) {
-        return JsonViews.endpoint(row.view(), row.day(), row.sixtyDays(), row.days(), dashboard);
+        JsonObject json = JsonViews.endpoint(row.view(), row.day(), row.sixtyDays(), row.days(), dashboard,
+                row.maintenanceDays());
+        if (row.window() != null) {
+            JsonObject window = new JsonObject();
+            window.addProperty("id", row.window().window().id());
+            window.addProperty("title", row.window().window().title());
+            window.addProperty("start", row.window().window().start().toString());
+            window.addProperty("end", row.window().window().end().toString());
+            json.add("maintenance", window);
+        }
+        return json;
     }
 }

@@ -11,7 +11,9 @@ import io.siggi.healthchecker.web.view.Viewer;
 import io.siggi.http.HTTPRequest;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 
 /** HTML and response helpers shared by the dashboard pages. */
@@ -73,11 +75,21 @@ final class PageSupport {
      */
     static void bar(StringBuilder html, Site site, String serviceId, String serviceName, List<DaySummary> days,
                     DashboardConfig dashboard) {
+        bar(html, site, serviceId, serviceName, days, dashboard, Set.of());
+    }
+
+    /**
+     * As above, with the days on which a maintenance window affecting the service took place (blue
+     * when nothing unplanned went down).
+     */
+    static void bar(StringBuilder html, Site site, String serviceId, String serviceName, List<DaySummary> days,
+                    DashboardConfig dashboard, Set<LocalDate> maintenanceDays) {
         html.append("<div class=\"bar\" role=\"group\" aria-label=\"").append(Html.escape(serviceName))
                 .append(": last ").append(days.size()).append(" days\">");
         for (DaySummary day : days) {
-            String tip = tooltip(day);
-            html.append("<a class=\"seg seg-").append(DayColor.of(day, dashboard).id()).append("\" href=\"")
+            boolean planned = maintenanceDays.contains(day.date());
+            String tip = tooltip(day, planned);
+            html.append("<a class=\"seg seg-").append(DayColor.of(day, dashboard, planned).id()).append("\" href=\"")
                     .append(Html.escape(site.link("/service/" + serviceId + "?view=calendar&day=" + day.date())))
                     .append("\" title=\"").append(Html.escape(tip)).append("\" aria-label=\"").append(Html.escape(tip))
                     .append("\"></a>");
@@ -88,6 +100,11 @@ final class PageSupport {
 
     /** Date, uptime, total downtime and number of outages, e.g. {@code 2026-11-13: 99.3% uptime, 10m down, 1 outage}. */
     static String tooltip(DaySummary day) {
+        return tooltip(day, false);
+    }
+
+    /** As above; {@code planned}: a maintenance window took place on the day. */
+    static String tooltip(DaySummary day, boolean planned) {
         StringBuilder tip = new StringBuilder().append(day.date()).append(": ");
         if (!day.uptime().hasData()) {
             return tip.append("no data").toString();
@@ -101,6 +118,8 @@ final class PageSupport {
         tip.append(", ").append(day.events()).append(day.events() == 1 ? " outage" : " outages");
         if (day.maintenanceEvents() > 0) {
             tip.append(", ").append(day.maintenanceEvents()).append(" planned maintenance");
+        } else if (planned) {
+            tip.append(", planned maintenance");
         }
         return tip.toString();
     }

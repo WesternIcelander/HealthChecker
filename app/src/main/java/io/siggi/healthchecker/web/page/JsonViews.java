@@ -48,6 +48,12 @@ final class JsonViews {
      */
     static JsonObject endpoint(EndpointView service, Uptime day, Uptime sixtyDays, List<DaySummary> days,
                                DashboardConfig dashboard) {
+        return endpoint(service, day, sixtyDays, days, dashboard, java.util.Set.of());
+    }
+
+    /** As above, with the days on which a maintenance window affecting it took place (see {@link #days}). */
+    static JsonObject endpoint(EndpointView service, Uptime day, Uptime sixtyDays, List<DaySummary> days,
+                               DashboardConfig dashboard, java.util.Set<java.time.LocalDate> maintenanceDays) {
         JsonObject endpoint = new JsonObject();
         endpoint.addProperty("id", service.id());
         endpoint.addProperty("name", service.name());
@@ -58,7 +64,7 @@ final class JsonViews {
         uptimes.add("24h", percent(day));
         uptimes.add("60d", percent(sixtyDays));
         endpoint.add("uptime", uptimes);
-        endpoint.add("days", days(days, dashboard));
+        endpoint.add("days", days(days, dashboard, maintenanceDays));
         if (service.lastCheck() != null) {
             endpoint.add("last", check(service.lastCheck()));
         }
@@ -79,6 +85,14 @@ final class JsonViews {
 
     /** Day summaries, in the given order. */
     static JsonArray days(List<DaySummary> days, DashboardConfig dashboard) {
+        return days(days, dashboard, java.util.Set.of());
+    }
+
+    /**
+     * Day summaries, in the given order; a day in {@code maintenanceDays} (a maintenance window affecting
+     * the service took place) has {@code "maintenance": true} and is blue without unplanned downtime.
+     */
+    static JsonArray days(List<DaySummary> days, DashboardConfig dashboard, java.util.Set<java.time.LocalDate> maintenanceDays) {
         JsonArray array = new JsonArray();
         for (DaySummary day : days) {
             JsonObject d = new JsonObject();
@@ -87,7 +101,9 @@ final class JsonViews {
             d.addProperty("downtimeSeconds", day.uptime().downtime().getSeconds());
             d.addProperty("events", day.events());
             if (day.maintenanceEvents() > 0) d.addProperty("maintenanceEvents", day.maintenanceEvents());
-            d.addProperty("color", DayColor.of(day, dashboard).id());
+            boolean planned = maintenanceDays.contains(day.date());
+            if (planned) d.addProperty("maintenance", true);
+            d.addProperty("color", DayColor.of(day, dashboard, planned).id());
             array.add(d);
         }
         return array;
@@ -141,7 +157,7 @@ final class JsonViews {
         return json;
     }
 
-    private static JsonObject note(NoteView note) {
+    static JsonObject note(NoteView note) {
         JsonObject json = new JsonObject();
         json.addProperty("id", note.id());
         json.addProperty("author", note.author());

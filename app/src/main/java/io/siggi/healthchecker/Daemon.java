@@ -32,6 +32,8 @@ import io.siggi.healthchecker.web.page.EventEditor;
 import io.siggi.healthchecker.web.page.CategoryEditor;
 import io.siggi.healthchecker.web.page.LayoutEditor;
 import io.siggi.healthchecker.web.page.LoginPage;
+import io.siggi.healthchecker.web.page.MaintenancePage;
+import io.siggi.healthchecker.web.page.MaintenanceViews;
 import io.siggi.healthchecker.web.page.ServicePage;
 import io.siggi.healthchecker.web.page.StatusPage;
 import io.siggi.healthchecker.web.site.SiteResolver;
@@ -174,6 +176,14 @@ final class Daemon implements AutoCloseable {
                 config.dashboard(), new EventEditor(permissions, sessions, history).audit(audit));
         servicePage.endpointEditor(endpointEditor);
         servicePage.register(web);
+        MaintenanceViews maintenanceViews = new MaintenanceViews(maintenance,
+                () -> layout.resolve(endpoints.categoryConfigs(), endpoints.definitions()), lookup, clock,
+                config.maintenance().upcomingDays());
+        MaintenancePage maintenancePage = new MaintenancePage(sites, permissions, sessions, maintenanceViews,
+                maintenanceScheduler, config::notificationChannels);
+        maintenancePage.register(web);
+        statusPage.maintenance(maintenancePage);
+        servicePage.maintenance(maintenancePage);
     }
 
     /**

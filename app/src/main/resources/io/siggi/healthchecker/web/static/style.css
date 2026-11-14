@@ -751,3 +751,37 @@ h2.day-title { font-size: 1.4rem; }
 .audit-diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 6px; }
 .audit-diff > div { min-width: 0; }
 .audit-label { margin: 0 0 4px; font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+
+/* ---- scheduled maintenance ---- */
+
+.maintenance-box {
+  margin: 0 0 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--maintenance);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.maintenance-box-title { margin: 0 0 6px; font-size: 1rem; }
+.maintenance-list { list-style: none; margin: 0; padding: 0; }
+.maintenance-item + .maintenance-item { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.maintenance-head, .maintenance-when, .maintenance-affected, .maintenance-actions { margin: 0; }
+.maintenance-title { font-weight: 600; overflow-wrap: anywhere; }
+.maintenance-when, .maintenance-affected { font-size: 0.9rem; }
+.maintenance-actions { margin-top: 4px; }
+.badge-maintenance, .badge-planned { border-color: var(--maintenance); color: var(--maintenance); }
+.maintenance-page-title { margin: 0 0 12px; font-size: 1.4rem; overflow-wrap: anywhere; }
+.maintenance-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.maintenance-edit { margin: 16px 0; }
+.maintenance-edit > summary { cursor: pointer; font-weight: 600; }
+.maintenance-form { max-width: 640px; }
+.maintenance-form input[type="text"], .maintenance-form textarea { width: 100%; font: inherit; }
+.maintenance-form fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.m-check { display: inline-block; margin: 2px 12px 2px 0; }
+.inline-form { display: inline; }
+.series { margin-top: 16px; }
+.day-maintenance { list-style: none; margin: 4px 0 10px; padding: 0; font-size: 0.9rem; }
+.day-maintenance-title { margin: 10px 0 0; font-size: 0.95rem; }
+.cal-future-maintenance { border: 2px solid var(--maintenance); }
+.event-filter { display: flex; gap: 12px; margin: 0 0 10px; font-size: 0.9rem; }
+.event-filter .filter-current { font-weight: 600; color: var(--fg); text-decoration: none; }

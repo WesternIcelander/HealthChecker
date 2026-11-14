@@ -38,6 +38,7 @@ public final class CategoryGrouping {
             List<EndpointView> views = new ArrayList<>();
             int down = 0;
             int unknown = 0;
+            int maintenance = 0;
             for (String id : category.endpointIds()) {
                 Optional<Endpoint> endpoint = endpoints.apply(id);
                 if (endpoint.isEmpty()) {
@@ -51,6 +52,7 @@ public final class CategoryGrouping {
                 switch (view.get().state()) {
                     case DOWN -> down++;
                     case UNKNOWN -> unknown++;
+                    case MAINTENANCE -> maintenance++;
                     case UP -> {
                     }
                 }
@@ -58,7 +60,7 @@ public final class CategoryGrouping {
             if (views.isEmpty()) {
                 continue;
             }
-            CategorySummary summary = new CategorySummary(views.size(), down, unknown);
+            CategorySummary summary = new CategorySummary(views.size(), down, unknown, maintenance);
             if (layout.flat()) {
                 sections.add(new CategorySection(null, null, null, views, summary));
             } else if (category.isOther()) {

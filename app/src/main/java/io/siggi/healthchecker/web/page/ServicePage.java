@@ -7,6 +7,7 @@ import io.siggi.healthchecker.history.HistoryEvent;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.Uptime;
 import io.siggi.healthchecker.history.UptimeCalculator;
+import io.siggi.healthchecker.maintenance.MaintenanceWindow;
 import io.siggi.healthchecker.plugin.JsonEndpointConfig.Target;
 import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.status.EndpointStatus;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -94,6 +96,7 @@ public final class ServicePage {
     private final DashboardConfig dashboard;
     private final EventEditor editor;
     private volatile EndpointEditor endpointEditor;
+    private volatile MaintenancePage maintenance;
     private final ViewFilter filter = new ViewFilter();
 
     /**
@@ -135,6 +138,20 @@ public final class ServicePage {
         this.endpointEditor = endpointEditor;
     }
 
+    /**
+     * Adds scheduled maintenance: upcoming windows for the service, blue days, maintenance windows on the day
+     * pages (also future days that have some), and the "Schedule maintenance" link for users who may use it.
+     */
+    public void maintenance(MaintenancePage maintenance) {
+        this.maintenance = maintenance;
+    }
+
+    /** The days in {@code [from, to]} with a maintenance window affecting the service. */
+    Set<LocalDate> maintenanceDays(String endpointId, LocalDate from, LocalDate to) {
+        MaintenancePage m = maintenance;
+        return m == null ? Set.of() : m.views().days(endpointId, from, to);
+    }
+
     public void register(WebServer server) {
         server.register(PREFIX, this::page);
         new ServiceApi(this, dashboard, clock).register(server);
@@ -153,7 +170,31 @@ public final class ServicePage {
     }
 
     /** What the header shows. */
-    record Header(Site site, Viewer viewer, EndpointView view, Uptime day, Uptime sixtyDays, List<DaySummary> days) {
+    record Header(Site site, Viewer viewer, EndpointView view, Uptime day, Uptime sixtyDays, List<DaySummary> days,
+                  Set<LocalDate> maintenanceDays) {
+    }
+
+    /** Which events the list view shows ({@code ?filter=}): all, outages only, or planned maintenance only. */
+    enum EventFilter {
+        ALL, OUTAGES, MAINTENANCE;
+
+        String id() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+
+        static EventFilter parse(String value) {
+            if ("outages".equals(value)) return OUTAGES;
+            if ("maintenance".equals(value)) return MAINTENANCE;
+            return ALL;
+        }
+
+        boolean matches(HistoryEvent event) {
+            return switch (this) {
+                case ALL -> true;
+                case OUTAGES -> event.kind() != HistoryEvent.Kind.MAINTENANCE;
+                case MAINTENANCE -> event.kind() == HistoryEvent.Kind.MAINTENANCE;
+            };
+        }
     }
 
     /**
@@ -174,7 +215,11 @@ public final class ServicePage {
     }
 
     /** One day block of the calendar; {@code summary} and {@code color} are {@code null} for future days. */
-    record CalendarDay(LocalDate date, DaySummary summary, DayColor color) {
+    record CalendarDay(LocalDate date, DaySummary summary, DayColor color, boolean maintenance) {
+        CalendarDay(LocalDate date, DaySummary summary, DayColor color) {
+            this(date, summary, color, false);
+        }
+
         boolean future() {
             return summary == null;
         }
@@ -217,8 +262,14 @@ public final class ServicePage {
         }
     }
 
-    /** What the day popover and the day page show: the day's summary and its events, oldest first. */
-    record DayDetail(LocalDate date, DaySummary summary, List<DayEvent> events) {
+    /**
+     * What the day popover and the day page show: the day's summary and its events, oldest first, and the
+     * maintenance windows affecting the service on that day, by start.
+     */
+    record DayDetail(LocalDate date, DaySummary summary, List<DayEvent> events, List<MaintenanceWindow> windows) {
+        boolean future(LocalDate today) {
+            return date.isAfter(today);
+        }
     }
 
     /** A {@code yyyy-mm-dd} date, or {@code null} if the value isn't one. */
@@ -251,15 +302,19 @@ public final class ServicePage {
      */
     Optional<DayDetail> day(Service service, LocalDate date) {
         String id = service.endpoint().id();
+        Instant dayStart = date.atStartOfDay(uptime.zone()).toInstant();
+        Instant dayEnd = date.plusDays(1).atStartOfDay(uptime.zone()).toInstant();
+        MaintenancePage m = maintenance;
+        List<MaintenanceWindow> windows = m == null ? List.of() : m.views().affecting(id, dayStart, dayEnd);
         if (date.isAfter(uptime.today())) {
-            return Optional.empty();
+            // Future days have content only when maintenance is planned.
+            if (windows.isEmpty()) return Optional.empty();
+            return Optional.of(new DayDetail(date, new DaySummary(date, Uptime.NONE, 0, 0), List.of(), windows));
         }
         LocalDate first = firstCovered(id);
         DaySummary summary = first == null || date.isBefore(first)
                 ? new DaySummary(date, Uptime.NONE, 0, 0)
                 : uptime.day(id, date);
-        Instant dayStart = date.atStartOfDay(uptime.zone()).toInstant();
-        Instant dayEnd = date.plusDays(1).atStartOfDay(uptime.zone()).toInstant();
         Instant now = clock.instant();
         List<HistoryEvent> overlapping = new ArrayList<>();
         for (HistoryEvent event : history.events(id)) {
@@ -279,7 +334,7 @@ public final class ServicePage {
             Instant to = end.isAfter(dayEnd) ? dayEnd : end;
             events.add(new DayEvent(view.get(), from, to, event.start().isBefore(dayStart), endsLater));
         }
-        return Optional.of(new DayDetail(date, summary, events));
+        return Optional.of(new DayDetail(date, summary, events, windows));
     }
 
     /**
@@ -335,6 +390,7 @@ public final class ServicePage {
         for (YearMonth month : calendarMonths(YearMonth.from(today), shown)) {
             LocalDate first = month.atDay(1);
             LocalDate last = month.atEndOfMonth();
+            Set<LocalDate> planned = maintenanceDays(id, first, last);
             Map<LocalDate, DaySummary> computed = new HashMap<>();
             if (firstCovered != null) {
                 LocalDate from = first.isBefore(firstCovered) ? firstCovered : first;
@@ -345,11 +401,13 @@ public final class ServicePage {
             }
             List<CalendarDay> days = new ArrayList<>(last.getDayOfMonth());
             for (LocalDate date = first; !date.isAfter(last); date = date.plusDays(1)) {
+                boolean maintenanceDay = planned.contains(date);
                 if (date.isAfter(today)) {
-                    days.add(new CalendarDay(date, null, null));
+                    days.add(new CalendarDay(date, null, null, maintenanceDay));
                 } else {
                     DaySummary summary = computed.getOrDefault(date, new DaySummary(date, Uptime.NONE, 0, 0));
-                    days.add(new CalendarDay(date, summary, DayColor.of(summary, dashboard)));
+                    days.add(new CalendarDay(date, summary, DayColor.of(summary, dashboard, maintenanceDay),
+                            maintenanceDay));
                 }
             }
             int blanks = first.getDayOfWeek().getValue() - DayOfWeek.MONDAY.getValue();
@@ -391,8 +449,9 @@ public final class ServicePage {
     Header header(Service service) {
         String id = service.endpoint().id();
         LocalDate today = uptime.today();
+        LocalDate first = today.minusDays(StatusPage.BAR_DAYS - 1);
         return new Header(service.site(), service.viewer(), service.view(), uptime.last24Hours(id),
-                uptime.last60Days(id), uptime.days(id, today.minusDays(StatusPage.BAR_DAYS - 1), today));
+                uptime.last60Days(id), uptime.days(id, first, today), maintenanceDays(id, first, today));
     }
 
     /**
@@ -400,7 +459,13 @@ public final class ServicePage {
      * first. A page past the last one gives the last page.
      */
     EventPage events(Service service, int page) {
+        return events(service, page, EventFilter.ALL);
+    }
+
+    /** As above, only the events {@code filter} matches. */
+    EventPage events(Service service, int page, EventFilter filter) {
         List<HistoryEvent> all = new ArrayList<>(history.events(service.endpoint().id()));
+        all.removeIf(e -> !filter.matches(e));
         all.sort(Comparator.comparing(HistoryEvent::start).thenComparing(HistoryEvent::id).reversed());
         int total = all.size();
         int pages = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
@@ -409,7 +474,7 @@ public final class ServicePage {
         int from = Math.min(total, shown * PAGE_SIZE);
         int to = Math.min(total, from + PAGE_SIZE);
         for (HistoryEvent event : all.subList(from, to)) {
-            filter.event(service.viewer(), service.endpoint(), event).ifPresent(views::add);
+            this.filter.event(service.viewer(), service.endpoint(), event).ifPresent(views::add);
         }
         return new EventPage(views, shown, pages, total);
     }
@@ -491,16 +556,30 @@ public final class ServicePage {
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n");
         headerHtml(html, header(service));
         EndpointEditor manage = endpointEditor;
+        MaintenancePage m = maintenance;
+        StringBuilder actions = new StringBuilder();
         if (manage != null && manage.canManage(request)) {
-            html.append("<p class=\"page-actions\"><a class=\"button\" href=\"")
+            actions.append("<a class=\"button\" href=\"")
                     .append(Html.escape(site.link(EndpointEditor.PATH + "/" + service.endpoint().id())))
                     .append("\">Edit</a>");
             if (manage.canDelete(request, service.endpoint().id())) {
-                html.append(" <a class=\"button button-danger\" href=\"")
+                actions.append(" <a class=\"button button-danger\" href=\"")
                         .append(Html.escape(site.link(EndpointEditor.PATH + "/" + service.endpoint().id() + "/delete")))
                         .append("\">Delete</a>");
             }
-            html.append("</p>\n");
+        }
+        if (m != null && m.canManage(request)) {
+            if (!actions.isEmpty()) actions.append(' ');
+            actions.append("<a class=\"button\" href=\"")
+                    .append(Html.escape(site.link(MaintenancePage.PREFIX + "/new?service=" + service.endpoint().id())))
+                    .append("\">Schedule maintenance</a>");
+        }
+        if (!actions.isEmpty()) {
+            html.append("<p class=\"page-actions\">").append(actions).append("</p>\n");
+        }
+        if (m != null) {
+            m.upcomingBox(html, site, m.views().upcoming(service.viewer(), site, service.endpoint().id()), request,
+                    service.viewer().csrfToken(), PREFIX + service.endpoint().id());
         }
         // The list view is the default: any ?view= other than "calendar" shows it. A valid
         // ?day= up to today opens the calendar page containing that day, with its details open.
@@ -513,11 +592,12 @@ public final class ServicePage {
         if (calendar) {
             CalendarPage shown = calendar(service, page);
             LocalDate selected = day;
-            DayDetail detail = selected == null || shown.months().stream().noneMatch(m -> m.month().equals(YearMonth.from(selected)))
+            DayDetail detail = selected == null || shown.months().stream().noneMatch(mo -> mo.month().equals(YearMonth.from(selected)))
                     ? null : day(service, selected).orElse(null);
             calendarHtml(html, service, shown, detail);
         } else {
-            listHtml(html, service, events(service, page));
+            EventFilter eventFilter = EventFilter.parse(request.get().get("filter"));
+            listHtml(html, service, events(service, page, eventFilter), eventFilter);
         }
         PageSupport.foot(html, site);
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
@@ -566,7 +646,7 @@ public final class ServicePage {
         Optional<Service> found = service(request, id);
         if (found.isEmpty()) return;
         Optional<DayDetail> detail = day(found.get(), date);
-        if (detail.isEmpty()) return; // a future day
+        if (detail.isEmpty()) return; // a future day without planned maintenance
         request.allowedMethods("GET");
         Service service = found.get();
         Site site = service.site();
@@ -598,7 +678,16 @@ public final class ServicePage {
                 .append("\" aria-labelledby=\"day-title-").append(detail.date()).append("\">\n")
                 .append('<').append(heading).append(" class=\"day-title\" id=\"day-title-").append(detail.date()).append("\">")
                 .append("<time datetime=\"").append(detail.date()).append("\">").append(LONG_DATE.format(detail.date()))
-                .append("</time></").append(heading).append(">\n<dl class=\"facts day-facts\">\n");
+                .append("</time></").append(heading).append(">\n");
+        MaintenancePage m = maintenance;
+        if (detail.future(uptime.today())) {
+            html.append("<p class=\"muted day-upcoming\">Upcoming day.</p>\n");
+            if (m != null) m.dayWindowsHtml(html, site, detail.windows());
+            html.append("<p class=\"day-link\"><a href=\"").append(Html.escape(site.link(servicePath + "/day/" + detail.date())))
+                    .append("\">Open as page</a></p>\n</section>\n");
+            return;
+        }
+        html.append("<dl class=\"facts day-facts\">\n");
         fact(html, "day-uptime", "Uptime", summary.uptime().format());
         String downtime = !summary.uptime().hasData() ? Uptime.NO_DATA
                 : summary.uptime().downtime().isZero() ? "none" : Durations.format(summary.uptime().downtime());
@@ -608,6 +697,7 @@ public final class ServicePage {
             fact(html, "day-maintenance", "Planned maintenance", Integer.toString(summary.maintenanceEvents()));
         }
         html.append("</dl>\n");
+        if (m != null) m.dayWindowsHtml(html, site, detail.windows());
         if (detail.events().isEmpty()) {
             html.append("<p class=\"muted day-empty\">No downtime on this day.</p>\n");
         } else {
@@ -618,7 +708,8 @@ public final class ServicePage {
                 html.append("<li class=\"day-event").append(day.ongoing() ? " event-ongoing" : "").append("\" data-event=\"")
                         .append(Html.escape(e.id())).append("\">\n<p class=\"day-event-title\"><a href=\"")
                         .append(Html.escape(site.link(servicePath + "/event/" + e.id()))).append("\">")
-                        .append(Html.escape(e.title())).append("</a></p>\n<p class=\"day-event-meta\"><span class=\"day-event-when\">")
+                        .append(Html.escape(e.title())).append("</a>").append(plannedBadge(e))
+                        .append("</p>\n<p class=\"day-event-meta\"><span class=\"day-event-when\">")
                         .append("<time datetime=\"").append(day.from()).append("\">")
                         .append(day.startsEarlier() ? "00:00:00" : TIME_OF_DAY.format(day.from().atZone(uptime.zone())))
                         .append("</time> – <span class=\"event-end\">");
@@ -682,6 +773,15 @@ public final class ServicePage {
                 html.append("<span class=\"cal-blank\" aria-hidden=\"true\"></span>");
             }
             for (CalendarDay day : month.days()) {
+                if (day.future() && day.maintenance()) {
+                    // Planned maintenance: a blue outline, linking to the day like past days.
+                    String tip = day.date() + ": planned maintenance";
+                    html.append("<a class=\"cal-day cal-future cal-future-maintenance\" href=\"")
+                            .append(Html.escape(site.link(PREFIX + service.view().id() + "/day/" + day.date())))
+                            .append("\" data-date=\"").append(day.date()).append("\" title=\"").append(Html.escape(tip))
+                            .append("\" aria-label=\"").append(Html.escape(tip)).append("\"></a>");
+                    continue;
+                }
                 if (day.future()) {
                     String tip = day.date() + ": upcoming";
                     html.append("<span class=\"cal-day cal-future\" data-date=\"").append(day.date())
@@ -690,7 +790,7 @@ public final class ServicePage {
                     continue;
                 }
                 // Days up to today link to their day page; app.js shows it as a popover instead.
-                String tip = PageSupport.tooltip(day.summary());
+                String tip = PageSupport.tooltip(day.summary(), day.maintenance());
                 boolean isSelected = selected != null && selected.date().equals(day.date());
                 html.append("<a class=\"cal-day cal-").append(day.color().id()).append(isSelected ? " cal-selected" : "")
                         .append("\" href=\"").append(Html.escape(site.link(PREFIX + service.view().id() + "/day/" + day.date())))
@@ -725,12 +825,31 @@ public final class ServicePage {
     }
 
     /** The list view: events newest first, each a {@code <details>} with its notes, plus paging links. */
-    private void listHtml(StringBuilder html, Service service, EventPage page) {
+    private void listHtml(StringBuilder html, Service service, EventPage page, EventFilter eventFilter) {
         Site site = service.site();
         String servicePath = PREFIX + service.view().id();
-        html.append("<section class=\"events\" id=\"events\">\n<h3 class=\"events-title\">Downtime history</h3>\n");
+        String filterQuery = eventFilter == EventFilter.ALL ? "" : "&filter=" + eventFilter.id();
+        html.append("<section class=\"events\" id=\"events\">\n<h3 class=\"events-title\">Downtime history</h3>\n")
+                .append("<nav class=\"event-filter\" aria-label=\"Show\">");
+        for (EventFilter f : EventFilter.values()) {
+            String label = switch (f) {
+                case ALL -> "All";
+                case OUTAGES -> "Outages";
+                case MAINTENANCE -> "Maintenance";
+            };
+            String href = site.link(servicePath + "?view=list" + (f == EventFilter.ALL ? "" : "&filter=" + f.id()) + "#events");
+            html.append("<a class=\"filter").append(f == eventFilter ? " filter-current" : "").append("\" href=\"")
+                    .append(Html.escape(href)).append('"').append(f == eventFilter ? " aria-current=\"page\"" : "")
+                    .append('>').append(label).append("</a>");
+        }
+        html.append("</nav>\n");
         if (page.total() == 0) {
-            html.append("<p class=\"muted events-empty\">No downtime recorded.</p>\n</section>\n");
+            String empty = switch (eventFilter) {
+                case ALL -> "No downtime recorded.";
+                case OUTAGES -> "No outages recorded.";
+                case MAINTENANCE -> "No planned maintenance recorded.";
+            };
+            html.append("<p class=\"muted events-empty\">").append(empty).append("</p>\n</section>\n");
             return;
         }
         Instant now = clock.instant();
@@ -740,6 +859,7 @@ public final class ServicePage {
             html.append("<li class=\"event").append(e.ongoing() ? " event-ongoing" : "").append("\" id=\"event-")
                     .append(Html.escape(e.id())).append("\">\n<details>\n<summary>")
                     .append("<span class=\"event-title\">").append(Html.escape(e.title())).append("</span>")
+                    .append(plannedBadge(e))
                     .append("<span class=\"event-meta\"><span class=\"event-when\">").append(timeTag(e.start()))
                     .append(" – <span class=\"event-end\">").append(e.ongoing() ? "ongoing" : timeTag(e.end()))
                     .append("</span></span><span class=\"event-duration\"><span class=\"visually-hidden\">Duration: </span>")
@@ -754,16 +874,16 @@ public final class ServicePage {
             flagsHtml(html, e);
             if (service.annotate()) {
                 editor.renameForm(html, site, service.endpoint().id(), service.endpoint().name(), e.id(),
-                        service.viewer().csrfToken(), servicePath + "?view=list&page=" + page.page() + "#event-" + e.id());
+                        service.viewer().csrfToken(), servicePath + "?view=list&page=" + page.page() + filterQuery + "#event-" + e.id());
             }
-            notesHtml(html, service, e, servicePath + "?view=list&page=" + page.page() + "#event-" + e.id());
+            notesHtml(html, service, e, servicePath + "?view=list&page=" + page.page() + filterQuery + "#event-" + e.id());
             html.append("<p class=\"event-link\"><a href=\"")
                     .append(Html.escape(site.link(servicePath + "/event/" + e.id()))).append("\">Permalink</a></p>\n")
                     .append("</div>\n</details>\n</li>\n");
         }
         html.append("</ol>\n");
         if (page.pages() > 1) {
-            String base = servicePath + "?view=list&page=";
+            String base = servicePath + "?view=list" + filterQuery + "&page=";
             html.append("<nav class=\"pager\" aria-label=\"Event pages\">");
             if (page.hasNewer()) {
                 html.append("<a rel=\"prev\" href=\"").append(Html.escape(site.link(base + (page.page() - 1))))
@@ -781,6 +901,11 @@ public final class ServicePage {
             html.append("</nav>\n");
         }
         html.append("</section>\n");
+    }
+
+    /** The "Planned" badge of a maintenance event (empty for outages). */
+    private static String plannedBadge(EventView e) {
+        return e.kind() == HistoryEvent.Kind.MAINTENANCE ? " <span class=\"badge badge-planned\">Planned</span>" : "";
     }
 
     /** Failure messages, where {@link ViewFilter} provides them. */
@@ -881,7 +1006,7 @@ public final class ServicePage {
             }
         }
         html.append("</dl>\n");
-        PageSupport.bar(html, site, service.id(), service.name(), header.days(), dashboard);
+        PageSupport.bar(html, site, service.id(), service.name(), header.days(), dashboard, header.maintenanceDays());
         checkStrip(html, service.recentChecks());
         html.append("</section>\n");
     }
