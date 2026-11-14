@@ -115,6 +115,7 @@ final class PageSupport {
             case UP -> "Up";
             case DOWN -> "Down";
             case UNKNOWN -> "Not checked yet";
+            case MAINTENANCE -> "Maintenance";
         };
     }
 

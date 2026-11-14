@@ -26,6 +26,10 @@ import java.util.function.Consumer;
  *       threshold of 3 an outage starts at the first of the 3 failures.</li>
  * </ul>
  *
+ * <p>Endpoints in a scheduled maintenance window ({@link #setMaintenance}) are shown as
+ * {@link State#MAINTENANCE}; the state machine above keeps running underneath
+ * ({@link EndpointStatus#checkState()}) and its transitions are still reported.
+ *
  * <p>Every transition is logged and delivered to the listeners as a {@link StateChange},
  * in order per endpoint, on the thread that recorded the check. Thread-safe.
  */
@@ -36,6 +40,10 @@ public final class StatusRegistry {
     private final Logger logger;
     private final Map<String, Entry> entries = new ConcurrentHashMap<>();
     private final List<Consumer<StateChange>> listeners = new CopyOnWriteArrayList<>();
+    private final Map<String, Maintenance> maintenance = new ConcurrentHashMap<>();
+
+    private record Maintenance(String windowId, Instant since) {
+    }
 
     public StatusRegistry() {
         this(System.getLogger(StatusRegistry.class.getName()));
@@ -125,13 +133,33 @@ public final class StatusRegistry {
         }
     }
 
+    /**
+     * Puts an endpoint into maintenance window {@code windowId} since {@code since}, or takes it out
+     * ({@code windowId == null}). Kept independently of registration, so an endpoint added during a
+     * window is shown in maintenance at once.
+     */
+    public void setMaintenance(String endpointId, String windowId, Instant since) {
+        Objects.requireNonNull(endpointId, "endpointId");
+        if (windowId == null) {
+            maintenance.remove(endpointId);
+        } else {
+            maintenance.put(endpointId, new Maintenance(windowId, Objects.requireNonNull(since, "since")));
+        }
+    }
+
+    /** The maintenance window the endpoint is in, if any. */
+    public Optional<String> maintenanceWindow(String endpointId) {
+        Maintenance m = maintenance.get(endpointId);
+        return m == null ? Optional.empty() : Optional.of(m.windowId());
+    }
+
     public Optional<EndpointStatus> status(String endpointId) {
         Entry entry = entries.get(endpointId);
         if (entry == null) {
             return Optional.empty();
         }
         synchronized (entry) {
-            return Optional.of(entry.snapshot());
+            return Optional.of(withMaintenance(entry.snapshot()));
         }
     }
 
@@ -141,11 +169,21 @@ public final class StatusRegistry {
         for (Entry entry : entries.values()) {
             synchronized (entry) {
                 if (!entry.removed) {
-                    result.add(entry.snapshot());
+                    result.add(withMaintenance(entry.snapshot()));
                 }
             }
         }
         return result;
+    }
+
+    private EndpointStatus withMaintenance(EndpointStatus s) {
+        Maintenance m = maintenance.get(s.endpointId());
+        if (m == null) {
+            return s;
+        }
+        return new EndpointStatus(s.endpointId(), State.MAINTENANCE, m.since(), s.failureThreshold(),
+                s.failureCount(), s.streakStart(), s.firstFailureMessage(), s.lastCheck(), s.recentChecks(),
+                s.state(), m.windowId());
     }
 
     private void log(StateChange change) {

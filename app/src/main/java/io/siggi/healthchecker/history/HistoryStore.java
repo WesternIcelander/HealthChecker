@@ -62,6 +62,12 @@ import java.util.regex.Pattern;
  * endpoint was down) are closed at their last recorded failure and marked
  * {@code endedUnobserved}.
  *
+ * <p>Downtime while an endpoint is in a scheduled maintenance window ({@link #setMaintenance}) is
+ * recorded as a {@code maintenance} event linked to the window. When the endpoint enters or leaves a
+ * window while down, the open event is split there: closed at that moment, and a new event of the
+ * other kind starts at the same moment. A streak that began before the latest such change and only
+ * now led to DOWN is split the same way.
+ *
  * <p>Thread-safe. Write errors are logged and retried on the next heartbeat.
  */
 public final class HistoryStore implements AutoCloseable {
@@ -86,6 +92,8 @@ public final class HistoryStore implements AutoCloseable {
     private final Logger logger;
     private final FileWriter writer;
     private final Map<String, EndpointHistory> histories = new TreeMap<>();
+    /** Maintenance state per endpoint (kept apart from histories, so it doesn't count as history). */
+    private final Map<String, MaintenanceMark> maintenance = new HashMap<>();
     private final List<Consumer<HistoryEvent>> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<String>> deleteListeners = new CopyOnWriteArrayList<>();
     private ScheduledExecutorService heartbeatExecutor;
@@ -270,9 +278,20 @@ public final class HistoryStore implements AutoCloseable {
                 closeEvent(h, stale.closed(stale.lastFailureAt(), true));
             }
             Instant start = change.streakStart() != null ? change.streakStart() : check.time();
-            HistoryEvent e = new HistoryEvent(UUID.randomUUID().toString(), endpointId, HistoryEvent.Kind.OUTAGE,
-                    start, null, null, change.firstFailureMessage() != null ? change.firstFailureMessage() : check.message(),
-                    check.message(), check.time(), List.of(), false, false, null);
+            String firstMessage = change.firstFailureMessage() != null ? change.firstFailureMessage() : check.message();
+            MaintenanceMark mark = maintenance.get(endpointId);
+            String windowId = mark == null ? null : mark.windowId();
+            if (mark != null && start.isBefore(mark.since()) && mark.since().isBefore(check.time())) {
+                // The streak began before the endpoint entered or left a window: the part before is
+                // downtime of the kind it was then.
+                HistoryEvent before = newEvent(endpointId, mark.previousWindowId(), start, firstMessage, firstMessage,
+                        start).closed(mark.since(), false);
+                h.events.add(before);
+                h.dirtyYears.add(yearOf(start));
+                fire(before);
+                start = mark.since();
+            }
+            HistoryEvent e = newEvent(endpointId, windowId, start, firstMessage, check.message(), check.time());
             h.events.add(e);
             h.sortEvents();
             h.dirtyYears.add(yearOf(start));
@@ -289,6 +308,58 @@ public final class HistoryStore implements AutoCloseable {
                 h.replace(open.withLastFailure(check.time(), check.message()));
             }
         }
+    }
+
+    private static HistoryEvent newEvent(String endpointId, String windowId, Instant start, String firstMessage,
+                                         String lastMessage, Instant lastFailureAt) {
+        return new HistoryEvent(UUID.randomUUID().toString(), endpointId,
+                windowId != null ? HistoryEvent.Kind.MAINTENANCE : HistoryEvent.Kind.OUTAGE, start, null, null,
+                firstMessage, lastMessage, lastFailureAt, List.of(), false, false, windowId);
+    }
+
+    /**
+     * Puts an endpoint into maintenance window {@code windowId} from {@code at} on, or takes it out
+     * ({@code windowId == null}), so that downtime from then on is recorded as a {@code maintenance}
+     * event linked to the window, or as an {@code outage}. An open event of the other kind is split at
+     * {@code at}: closed there, and a new event (same failure messages) starts there; an open event
+     * that started at or after {@code at} just changes its kind. Setting the current window again
+     * changes nothing.
+     */
+    public synchronized void setMaintenance(String endpointId, String windowId, Instant at) {
+        Objects.requireNonNull(endpointId, "endpointId");
+        Objects.requireNonNull(at, "at");
+        MaintenanceMark mark = maintenance.get(endpointId);
+        String current = mark == null ? null : mark.windowId();
+        if (Objects.equals(current, windowId)) {
+            return;
+        }
+        maintenance.put(endpointId, new MaintenanceMark(windowId, current, at));
+        EndpointHistory h = histories.get(endpointId);
+        HistoryEvent open = h == null ? null : h.openEvent();
+        if (open == null || open.matchesMaintenance(windowId)) {
+            return;
+        }
+        if (!at.isAfter(open.start())) {
+            HistoryEvent changed = open.withMaintenance(windowId);
+            h.replace(changed);
+            flushEvents(h);
+            fire(changed);
+            return;
+        }
+        closeEvent(h, open.closed(at, false));
+        HistoryEvent next = newEvent(endpointId, windowId, at, open.lastFailureMessage(), open.lastFailureMessage(),
+                open.lastFailureAt());
+        h.events.add(next);
+        h.sortEvents();
+        h.dirtyYears.add(yearOf(at));
+        flushEvents(h);
+        fire(next);
+    }
+
+    /** The maintenance window the endpoint is in for the history, if any. */
+    public synchronized Optional<String> maintenanceWindow(String endpointId) {
+        MaintenanceMark mark = maintenance.get(endpointId);
+        return mark == null ? Optional.empty() : Optional.ofNullable(mark.windowId());
     }
 
     /**
@@ -685,6 +756,14 @@ public final class HistoryStore implements AutoCloseable {
 
     private static int yearOf(Instant instant) {
         return instant.atZone(ZoneOffset.UTC).getYear();
+    }
+
+    /**
+     * @param windowId         the current window, or {@code null}
+     * @param previousWindowId the window before the latest change, or {@code null}
+     * @param since            when the latest change happened
+     */
+    private record MaintenanceMark(String windowId, String previousWindowId, Instant since) {
     }
 
     private final class EndpointHistory {

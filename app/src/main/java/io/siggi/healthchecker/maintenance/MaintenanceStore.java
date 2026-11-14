@@ -78,6 +78,9 @@ import java.util.function.Predicate;
  *       had may have been deleted since and are kept). Once a window has ended, its endpoints and categories
  *       are fixed too.</li>
  *   <li>Cancelled windows can't be edited; only windows that haven't started can be cancelled.</li>
+ *   <li>A window in progress can be ended early ({@link #endNow}, its end becomes now) or extended
+ *       ({@link #extend}, to a later end within the length limit); audited as {@code maintenance.end} and
+ *       {@code maintenance.extend}.</li>
  * </ul>
  *
  * <p><b>Series.</b> A window with a {@link Recurrence} is a series. Its {@code start} and {@code end} are the
@@ -212,6 +215,7 @@ public final class MaintenanceStore {
     private final Clock clock;
     private final ZoneId zone;
     private volatile State state = new State(0, List.of());
+    private final List<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * @param zone the configured timezone, which series are expanded in
@@ -357,6 +361,82 @@ public final class MaintenanceStore {
         replace(cancelled, now);
         record(actor, "maintenance.cancel", id, auditValue(old), auditValue(cancelled));
         return Optional.of(cancelled);
+    }
+
+    /**
+     * "End now": ends a window in progress at the current time.
+     *
+     * @return the ended window, or empty if there's no window {@code id}
+     */
+    public synchronized Optional<MaintenanceWindow> endNow(String id, int expectedVersion, Actor actor)
+            throws InvalidWindowException, VersionConflictException, IOException {
+        Instant now = clock.instant();
+        List<MaintenanceWindow> windows = current(now);
+        MaintenanceWindow old = find(windows, id);
+        if (old == null) return Optional.empty();
+        if (old.version() != expectedVersion) throw new VersionConflictException(old.version());
+        checkInProgress(old, now);
+        MaintenanceWindow ended = withEnd(old, now, now);
+        windows.replaceAll(w -> w.id().equals(id) ? ended : w);
+        write(windows);
+        record(actor, "maintenance.end", id, auditValue(old), auditValue(ended));
+        return Optional.of(ended);
+    }
+
+    /**
+     * "Extend": moves the end of a window in progress later, to {@code end} (at most
+     * {@code maintenance.maxLengthDays} after its start).
+     *
+     * @return the extended window, or empty if there's no window {@code id}
+     */
+    public synchronized Optional<MaintenanceWindow> extend(String id, int expectedVersion, Instant end, Actor actor)
+            throws InvalidWindowException, VersionConflictException, IOException {
+        Instant now = clock.instant();
+        List<MaintenanceWindow> windows = current(now);
+        MaintenanceWindow old = find(windows, id);
+        if (old == null) return Optional.empty();
+        if (old.version() != expectedVersion) throw new VersionConflictException(old.version());
+        checkInProgress(old, now);
+        if (end == null) {
+            throw new InvalidWindowException(List.of("end: required"));
+        }
+        if (!end.isAfter(old.end())) {
+            throw new InvalidWindowException(List.of("end: must be later than the current end"));
+        }
+        if (Duration.between(old.start(), end).compareTo(Duration.ofDays(settings.maxLengthDays())) > 0) {
+            throw new InvalidWindowException(List.of("end: a window can be at most "
+                    + days(settings.maxLengthDays()) + " long"));
+        }
+        MaintenanceWindow extended = withEnd(old, end, now);
+        windows.replaceAll(w -> w.id().equals(id) ? extended : w);
+        write(windows);
+        record(actor, "maintenance.extend", id, auditValue(old), auditValue(extended));
+        return Optional.of(extended);
+    }
+
+    private static MaintenanceWindow find(List<MaintenanceWindow> windows, String id) {
+        for (MaintenanceWindow w : windows) {
+            if (w.id().equals(id)) return w;
+        }
+        return null;
+    }
+
+    private static void checkInProgress(MaintenanceWindow w, Instant now) throws InvalidWindowException {
+        if (w.isSeries()) throw new InvalidWindowException(List.of("a series isn't in progress itself"));
+        switch (w.status(now)) {
+            case CANCELLED -> throw new InvalidWindowException(List.of("the window was cancelled"));
+            case SCHEDULED -> throw new InvalidWindowException(List.of("the window hasn't started yet"));
+            case COMPLETED -> throw new InvalidWindowException(List.of("the window has ended"));
+            case IN_PROGRESS -> {
+            }
+        }
+    }
+
+    private static MaintenanceWindow withEnd(MaintenanceWindow w, Instant end, Instant updatedAt) {
+        return new MaintenanceWindow(w.id(), w.version() + 1, w.title(), w.description(), w.start(), end,
+                w.endpoints(), w.categories(), w.notifyChannels(), w.notes(), w.createdBy(), w.createdByName(),
+                w.createdAt(), updatedAt, w.cancelledAt(), w.recurrence(), w.exceptions(), w.seriesId(),
+                w.occurrence());
     }
 
     // ---- notes ----
@@ -856,6 +936,23 @@ public final class MaintenanceStore {
         State next = new State(current + 1, windows);
         AtomicFiles.write(file, encode(next).getBytes(StandardCharsets.UTF_8));
         state = next;
+        for (Runnable listener : listeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException e) {
+                System.getLogger(MaintenanceStore.class.getName())
+                        .log(System.Logger.Level.ERROR, "Maintenance change listener failed", e);
+            }
+        }
+    }
+
+    /** Adds a listener run after every successful write, under the store's lock. */
+    public void addChangeListener(Runnable listener) {
+        listeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    public void removeChangeListener(Runnable listener) {
+        listeners.remove(listener);
     }
 
     private void record(Actor actor, String action, String id, JsonElement before, JsonElement after) {

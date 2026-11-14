@@ -12,6 +12,8 @@ import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.EndpointStore;
 import io.siggi.healthchecker.history.HistoryStore;
 import io.siggi.healthchecker.history.UptimeCalculator;
+import io.siggi.healthchecker.maintenance.MaintenanceScheduler;
+import io.siggi.healthchecker.maintenance.MaintenanceStore;
 import io.siggi.healthchecker.plugin.PluginManager;
 import io.siggi.healthchecker.plugin.JsonEndpointConfig;
 import io.siggi.healthchecker.schedule.CheckScheduler;
@@ -23,6 +25,7 @@ import io.siggi.healthchecker.status.StateChange;
 import io.siggi.healthchecker.status.StatusRegistry;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.LayoutStore;
+import io.siggi.healthchecker.web.layout.ResolvedLayout;
 import io.siggi.healthchecker.web.page.AuditPage;
 import io.siggi.healthchecker.web.page.EndpointEditor;
 import io.siggi.healthchecker.web.page.EventEditor;
@@ -36,6 +39,7 @@ import io.siggi.healthchecker.web.site.SiteResolver;
 import java.io.IOException;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -54,6 +58,8 @@ final class Daemon implements AutoCloseable {
     private final StatusRegistry status = new StatusRegistry();
     private final CheckScheduler scheduler;
     private final UptimeCalculator uptime;
+    private final MaintenanceStore maintenance;
+    private final MaintenanceScheduler maintenanceScheduler;
     private final WebServer web;
     private final SessionManager sessions;
     private final CountDownLatch closed = new CountDownLatch(1);
@@ -107,13 +113,41 @@ final class Daemon implements AutoCloseable {
         uptime = new UptimeCalculator(history, config.timezone(), config.maintenance().countsAsDowntime(), clock);
         LayoutStore layout = new LayoutStore(config.dataDir());
         layout.load();
+        AuditLog audit = AuditLog.open(config.dataDir());
+        maintenance = new MaintenanceStore(config.dataDir(), config.maintenance(), new MaintenanceStore.References() {
+            @Override
+            public boolean endpointExists(String id) {
+                return endpoints.endpoint(id).isPresent();
+            }
+
+            @Override
+            public boolean categoryExists(String id) {
+                return endpoints.categories().stream().anyMatch(c -> c.category().id().equals(id));
+            }
+
+            @Override
+            public boolean channelExists(String name) {
+                return config.notificationChannels().contains(name);
+            }
+        }, audit, clock, config.timezone());
+        maintenance.load();
+        // A window's categories cover the services in them in the effective layout at each moment.
+        maintenanceScheduler = new MaintenanceScheduler(maintenance, status, history, () -> {
+            Map<String, String> categories = new HashMap<>();
+            for (ResolvedLayout.Category c : layout.resolve(endpoints.categoryConfigs(), endpoints.definitions())
+                    .categories()) {
+                for (String id : c.endpointIds()) {
+                    categories.put(id, c.isOther() ? null : c.id());
+                }
+            }
+            return categories;
+        }, clock);
         web = new WebServer(config.server());
         sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
                 web.trustedProxies());
         SiteResolver sites = SiteResolver.fromConfig(config, web.trustedProxies());
         UserDirectory users = UserDirectory.parse(config.auth());
         Permissions permissions = new Permissions(sessions, users::user);
-        AuditLog audit = AuditLog.open(config.dataDir());
         AuditPage auditPage = new AuditPage(sites, permissions, audit, config.timezone());
         auditPage.register(web);
         new LoginPage(sites, sessions, permissions,
@@ -164,6 +198,8 @@ final class Daemon implements AutoCloseable {
             }
             daemon.endpoints.addChangeListener(daemon::applyEndpointChanges);
             daemon.history.startHeartbeat();
+            // Windows in progress are applied before the first check is recorded.
+            daemon.maintenanceScheduler.start();
             daemon.scheduler.start();
             daemon.web.start();
         } catch (IOException | ConfigException | RuntimeException e) {
@@ -196,6 +232,10 @@ final class Daemon implements AutoCloseable {
 
     EndpointStore endpoints() {
         return endpoints;
+    }
+
+    MaintenanceStore maintenance() {
+        return maintenance;
     }
 
     StatusRegistry status() {
@@ -231,6 +271,7 @@ final class Daemon implements AutoCloseable {
         }
         try {
             web.close();
+            maintenanceScheduler.close();
             scheduler.close();
             uptime.close();
             history.close();

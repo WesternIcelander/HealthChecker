@@ -69,6 +69,18 @@ public record HistoryEvent(String id, String endpointId, Kind kind, Instant star
                 lastFailureAt, newNotes, endedUnobserved, endedByConfigChange, maintenanceId);
     }
 
+    /** The same event as another kind, linked to {@code newMaintenanceId} ({@code null} for an outage). */
+    HistoryEvent withMaintenance(String newMaintenanceId) {
+        return new HistoryEvent(id, endpointId, newMaintenanceId != null ? Kind.MAINTENANCE : Kind.OUTAGE, start, end,
+                title, firstFailureMessage, lastFailureMessage, lastFailureAt, notes, endedUnobserved,
+                endedByConfigChange, newMaintenanceId);
+    }
+
+    /** Whether this event is of the kind (and window) that downtime in {@code windowId} is recorded as. */
+    boolean matchesMaintenance(String windowId) {
+        return windowId == null ? kind == Kind.OUTAGE : kind == Kind.MAINTENANCE && windowId.equals(maintenanceId);
+    }
+
     HistoryEvent closed(Instant at, boolean unobserved) {
         Instant closeAt = at.isBefore(start) ? start : at;
         return new HistoryEvent(id, endpointId, kind, start, closeAt, title, firstFailureMessage, lastFailureMessage,

@@ -1098,7 +1098,7 @@ test list are build, docs or manual steps.
 ### M12 — Scheduled maintenance
 - [x] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
 - [x] Recurrence: daily / weekly / monthly rules with `until`, DST-safe expansion in the configured timezone, skip/edit single occurrence, materialise occurrences when they start. **Tests:** weekly recurrence across a DST change keeps local time; "first Sunday" monthly; skip and edit one occurrence; editing a series doesn't change past occurrences.
-- [ ] `MaintenanceScheduler`: start/end transitions; "End now" and "Extend"; affected endpoints show state `MAINTENANCE`. History integration: DOWN during a window → `kind: maintenance` event; split at window end into a normal `outage`; uptime excludes maintenance downtime unless `countsAsDowntime`. **Tests:** with a fake clock: transitions; end now; extend; down inside window → maintenance event, no outage; down past window end → outage starting at window end; uptime with and without `countsAsDowntime`.
+- [x] `MaintenanceScheduler`: start/end transitions; "End now" and "Extend"; affected endpoints show state `MAINTENANCE`. History integration: DOWN during a window → `kind: maintenance` event; split at window end into a normal `outage`; uptime excludes maintenance downtime unless `countsAsDowntime`. **Tests:** with a fake clock: transitions; end now; extend; down inside window → maintenance event, no outage; down past window end → outage starting at window end; uptime with and without `countsAsDowntime`.
 - [ ] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
 
 ### M13 — OIDC / OAuth 2.0 login
@@ -1719,3 +1719,22 @@ them; see CLAUDE.md.
   only yields occurrences starting after its `updatedAt`: rule or time edits never create or change past
   occurrences. Materialising isn't audited (no user action). `occurrences(from, to)` lists stored windows plus
   not-yet-stored occurrences; `occurrence(id)` finds either. The store takes the configured `ZoneId`.
+- `MaintenanceScheduler` (app, package `maintenance`): `tick()` materialises started occurrences, takes the windows in
+  progress and gives each endpoint the one it's in (endpoint ids, or its category in the effective layout at that moment;
+  overlapping windows: the earliest start, then id). A change applies at the window's own start or end when that has
+  passed (a late tick still splits at the right moment), at "now" when an endpoint joins a window that was already running
+  (moved into its category, added) or leaves one by an edit. Started, it ticks at every window start/end (looked ahead at
+  most 30 s; otherwise every 30 s) and, via a `MaintenanceStore` change listener (run after every write, under the store's
+  lock, so it only queues a tick), after every store change. "End now" (`MaintenanceStore.endNow`: end = now) and "Extend"
+  (`extend`: a later end within `maxLengthDays` of the start) need the window's `version` and an in-progress window
+  (also a materialised occurrence); audited `maintenance.end` / `maintenance.extend`; the scheduler's wrappers tick at
+  once. `run` loads `data/maintenance.json` (references: merged endpoints and categories, configured channels) and starts
+  the scheduler before the checks. `StatusRegistry.setMaintenance` (kept apart from registration) makes the shown state
+  `MAINTENANCE` with `since` = the window start; `EndpointStatus` adds `checkState` (the UP/DOWN/UNKNOWN machine, which
+  keeps running and reporting `StateChange`s) and `maintenanceId`. `HistoryStore.setMaintenance` (in memory only,
+  re-applied by the scheduler's first tick after a restart) decides the kind of new events (`maintenance` with
+  `maintenanceId`, or `outage`) and splits an open event of the other kind at the change: closed there (not unobserved)
+  and a new event starting there with the old one's last failure message; an open event that started at or after the
+  change just changes kind. This applies at a window's start too (an outage ongoing when a window starts becomes
+  maintenance from then on, symmetric to the end). A failure streak that began before the latest change and reaches
+  DOWN after it is split the same way (a closed event of the earlier kind up to the change).
