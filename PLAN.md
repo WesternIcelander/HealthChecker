@@ -1059,7 +1059,7 @@ test list are build, docs or manual steps.
 - [x] `ViewFilter` (allow-list copy) for `public` / `public-status` / `private`; targets never anonymous; leak filter omits entries containing declared targets. **Tests:** private endpoints absent; `public-status` fields exactly as in the visibility table; leaking message/detail omitted without placeholder while other details remain.
 - [x] `LayoutStore` (read side) and category grouping: default layout from config, merged with `data/layout.json` if present; implicit "Other"; flat list with no categories; hide categories with no visible services; heading summary. **Tests:** default ordering from config; saved layout overrides order and category; new config entries appended; stale ids ignored; uncategorized last by default; category with only private services hidden from anonymous.
 - [x] Sites: Host / trusted `X-Forwarded-Host` matching (exact, wildcard, port stripped), default site, `unknownHosts: "reject"`, scope filter applied before visibility, per-site title and base URL. **Tests:** scoping on main page and API; wildcard and port handling; unknown host default vs reject; `X-Forwarded-Host` ignored from untrusted IPs; links never built from the Host header.
-- [ ] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
+- [x] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
 
 ### M7 — Service page: list & calendar views
 - [ ] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
@@ -1347,3 +1347,14 @@ them; see CLAUDE.md.
   service the viewer sees in scope is down (`/api/status` → 503), else UNKNOWN if any isn't checked
   yet, else UP; the HTML page is always `200`. The viewer comes from a request → `Viewer` function
   (anonymous until M9). Both responses are `Cache-Control: no-store`.
+- Main page and `/api/status` (app, package `web.page`): the bar covers today and the 59 days before it in the
+  configured timezone (today up to now). `DayColor`: grey without data; blue with maintenance and no counted
+  downtime; otherwise red/orange/yellow below `redBelow`/`orangeBelow`/`yellowBelow` (only when there was
+  downtime), else green; compared on the truncated percentage. Each segment is a link to
+  `/service/{id}?view=calendar&day={date}` with the tooltip text as `title` and `aria-label` ("{date}: 99.3% uptime,
+  10m down, 1 outage", or "no data"); `app.js` swaps `title` for a tooltip that also shows on keyboard focus and stays
+  in the viewport. Durations are shown in at most two units, truncated (`45s`, `12m`, `1h 12m`, `2d 3h`). The page
+  auto-refreshes with `<meta http-equiv="refresh" content="60">`, so it works without JS. JSON: uptimes and a day's
+  `uptime` are numbers or `null` without data; each day also has `color` and, when non-zero, `maintenanceEvents`;
+  a category `summary` also has `unknown`; `last`, `visibility` and `targets` appear only when `ViewFilter` provides
+  them. Banner text: "N service(s) down", else "Waiting for the first checks", else "All systems operational".

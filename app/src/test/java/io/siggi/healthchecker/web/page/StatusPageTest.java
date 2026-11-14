@@ -6,13 +6,17 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.siggi.healthchecker.api.CheckResult;
 import io.siggi.healthchecker.config.CategoryConfig;
+import io.siggi.healthchecker.config.DashboardConfig;
 import io.siggi.healthchecker.config.EndpointDefinition;
 import io.siggi.healthchecker.config.ServerConfig;
 import io.siggi.healthchecker.config.SiteConfig;
 import io.siggi.healthchecker.config.UnknownHostsPolicy;
 import io.siggi.healthchecker.config.Visibility;
+import io.siggi.healthchecker.history.HistoryStore;
+import io.siggi.healthchecker.history.UptimeCalculator;
 import io.siggi.healthchecker.plugin.JsonEndpointConfig.Target;
 import io.siggi.healthchecker.schedule.Endpoint;
+import io.siggi.healthchecker.status.CheckRecord;
 import io.siggi.healthchecker.status.EndpointStatus;
 import io.siggi.healthchecker.status.State;
 import io.siggi.healthchecker.web.WebServer;
@@ -21,13 +25,20 @@ import io.siggi.healthchecker.web.site.SiteResolver;
 import io.siggi.healthchecker.web.view.Viewer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -43,11 +54,19 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Site scoping on the main page and {@code /api/status}, over real HTTP. Requests are written by
+ * The main page and {@code /api/status} (site scoping, overall state, day bars, no targets), over real HTTP. Requests are written by
  * hand because {@link java.net.http.HttpClient} won't send a custom {@code Host} header.
  */
 class StatusPageTest {
     private static final Instant T0 = Instant.parse("2026-11-13T09:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-11-13T12:00:00Z");
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+    private static final DashboardConfig DEFAULT_COLORS = new DashboardConfig("Status", 100.0, 99.0, 95.0);
+
+    @TempDir
+    Path dataDir;
+    private final List<HistoryStore> stores = new ArrayList<>();
+    private DashboardConfig dashboard = DEFAULT_COLORS;
 
     private final Map<String, Endpoint> endpoints = new LinkedHashMap<>();
     private final Map<String, EndpointStatus> statuses = new HashMap<>();
@@ -72,13 +91,23 @@ class StatusPageTest {
     @AfterEach
     void stop() {
         servers.forEach(WebServer::close);
+        stores.forEach(HistoryStore::close);
     }
 
     private void add(String id, String category, Visibility visibility, State state, String target) {
         EndpointDefinition def = new EndpointDefinition(id, "Name " + id, "http", category, visibility, 60, 5000, 1,
                 List.of(), List.of(), 0, new JsonObject());
-        endpoints.put(id, new Endpoint(def, List.of(new Target("url", target)), timeout -> CheckResult.ok("ok")));
-        statuses.put(id, new EndpointStatus(id, state, T0, 1, 0, null, null, null, List.of()));
+        // Declared like the http check does: the URL as written, plus its host.
+        List<Target> targets = new ArrayList<>(List.of(new Target("url", target)));
+        String host = java.net.URI.create(target.contains("://") ? target : "x://" + target).getHost();
+        if (host != null && !host.equals(target)) targets.add(new Target("host", host));
+        endpoints.put(id, new Endpoint(def, targets, timeout -> CheckResult.ok("ok")));
+        setStatus(id, state, null);
+    }
+
+    private void setStatus(String id, State state, CheckRecord last) {
+        statuses.put(id, new EndpointStatus(id, state, state == State.UNKNOWN ? null : T0, 1, 0, null, null, last,
+                last == null ? List.of() : List.of(last)));
     }
 
     private WebServer start(UnknownHostsPolicy policy, String baseUrl, List<String> trustedProxies) throws Exception {
@@ -87,9 +116,12 @@ class StatusPageTest {
         servers.add(server);
         SiteResolver sites = new SiteResolver(List.of(MC, WEB), "Status", baseUrl, policy, server.trustedProxies());
         List<EndpointDefinition> defs = endpoints.values().stream().map(Endpoint::definition).toList();
+        HistoryStore history = HistoryStore.open(dataDir, CLOCK, System.getLogger(StatusPageTest.class.getName()));
+        stores.add(history);
+        UptimeCalculator uptime = new UptimeCalculator(history, ZoneOffset.UTC, false, CLOCK);
         new StatusPage(sites, () -> ResolvedLayout.resolve(null, categories, defs),
                 id -> Optional.ofNullable(endpoints.get(id)), id -> Optional.ofNullable(statuses.get(id)),
-                request -> viewer).register(server);
+                request -> viewer, uptime, dashboard).register(server);
         server.start();
         return server;
     }
@@ -291,15 +323,227 @@ class StatusPageTest {
 
     @Test
     void noTargetsInAnonymousOutput() throws Exception {
+        // Make the public endpoint's last check and its history mention its target: the leak filter must drop them.
+        setStatus("website", State.DOWN, new CheckRecord(T0, Duration.ofMillis(84), new CheckResult(false,
+                "GET https://www.example.com failed", Map.of("host", "www.example.com", "statusCode", 503))));
+        history("website", "2026-11-01T00:00:00Z", NOW.toString(),
+                event("outage", "2026-11-05T10:00:00Z", "2026-11-05T10:10:00Z", "can't reach www.example.com"));
+        history("survival", "2026-11-01T00:00:00Z", NOW.toString(),
+                event("outage", "2026-11-06T10:00:00Z", "2026-11-06T10:10:00Z", "mc.example.net refused"));
         WebServer server = start(UnknownHostsPolicy.DEFAULT);
-        for (String path : List.of("/", "/api/status")) {
-            String body = get(server, path, "status.example.com").body();
-            for (Endpoint endpoint : endpoints.values()) {
-                for (Target target : endpoint.targets()) {
-                    assertFalse(body.contains(target.value()), path + " leaks " + target.value());
-                }
+        List<String> needles = new ArrayList<>();
+        for (Endpoint endpoint : endpoints.values()) {
+            for (Target target : endpoint.targets()) {
+                needles.add(target.value());
+                java.net.URI uri = java.net.URI.create(target.value().contains("://") ? target.value() : "x://" + target.value());
+                if (uri.getHost() != null) needles.add(uri.getHost());
             }
         }
+        assertTrue(needles.contains("10.0.0.5") && needles.contains("www.example.com"));
+        for (String path : List.of("/", "/api/status")) {
+            String body = get(server, path, "status.example.com").body();
+            for (String needle : needles) {
+                assertFalse(body.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT)), path + " leaks " + needle);
+            }
+        }
+        // The rest of the last check is still there for the public endpoint.
+        JsonObject website = apiEndpoint(get(server, "/api/status", "status.example.com"), "website");
+        JsonObject last = website.getAsJsonObject("last");
+        assertFalse(last.has("message"));
+        assertEquals(503, last.getAsJsonObject("details").get("statusCode").getAsInt());
+        assertFalse(last.getAsJsonObject("details").has("host"));
+        assertEquals(84, last.get("latencyMs").getAsLong());
+        assertFalse(website.has("targets"));
+        assertFalse(website.has("visibility"));
+        // public-status: no last check, no type.
+        JsonObject survival = apiEndpoint(get(server, "/api/status", "status.example.com"), "survival");
+        assertFalse(survival.has("last"));
+        assertFalse(survival.has("type"));
+
+        // Sanity check of the search: a privileged viewer does get the targets.
+        viewer = new Viewer("alice", true);
+        String privileged = get(server, "/api/status", "status.example.com").body();
+        assertTrue(privileged.contains("http://10.0.0.5:8080"));
+        assertTrue(privileged.contains("GET https://www.example.com failed"));
+    }
+
+    @Test
+    void overallStateAndStatusCodeFromVisibleEndpointsOnly() throws Exception {
+        // Only the private endpoint is down.
+        setStatus("survival", State.UP, null);
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        Response api = get(server, "/api/status", "status.example.com");
+        assertEquals(200, api.status());
+        assertEquals("UP", overall(api));
+        Response page = get(server, "/", "status.example.com");
+        assertEquals(200, page.status());
+        assertTrue(page.body().contains("class=\"banner banner-up\""));
+        assertTrue(page.body().contains("All systems operational"));
+
+        viewer = new Viewer("alice", true);
+        api = get(server, "/api/status", "status.example.com");
+        assertEquals(503, api.status());
+        assertEquals("DOWN", overall(api));
+        page = get(server, "/", "status.example.com");
+        assertEquals(200, page.status());
+        assertTrue(page.body().contains("class=\"banner banner-down\""));
+        assertTrue(page.body().contains("1 service down"));
+
+        // A logged-in user without view.private gets the anonymous result.
+        viewer = new Viewer("bob", false);
+        assertEquals(200, get(server, "/api/status", "status.example.com").status());
+
+        // Not checked yet: UNKNOWN, still 200.
+        viewer = Viewer.ANONYMOUS;
+        setStatus("creative", State.UNKNOWN, null);
+        api = get(server, "/api/status", "status.example.com");
+        assertEquals(200, api.status());
+        assertEquals("UNKNOWN", overall(api));
+        assertTrue(get(server, "/", "status.example.com").body().contains("Waiting for the first checks"));
+
+        // Two visible services down.
+        setStatus("survival", State.DOWN, null);
+        setStatus("website", State.DOWN, null);
+        assertEquals(503, get(server, "/api/status", "status.example.com").status());
+        assertTrue(get(server, "/", "status.example.com").body().contains("2 services down"));
+    }
+
+    /** Fixture for the bar tests: monitored from 2026-09-25, outages on 1, 2, 3 and 5 October, maintenance on the 4th. */
+    private void barFixture() throws Exception {
+        history("website", "2026-09-25T00:00:00Z", NOW.toString(),
+                event("outage", "2026-10-01T10:00:00Z", "2026-10-01T10:10:00Z", "fail"),       // 99.30 %
+                event("outage", "2026-10-02T10:00:00Z", "2026-10-02T12:00:00Z", "fail"),       // 91.66 %
+                event("outage", "2026-10-03T10:00:00Z", "2026-10-03T10:30:00Z", "fail"),       // 97.91 %
+                event("maintenance", "2026-10-04T10:00:00Z", "2026-10-04T11:00:00Z", "fail"),  // planned
+                event("outage", "2026-10-05T10:00:00Z", "2026-10-05T10:00:05Z", "fail"));      // 99.99 %
+    }
+
+    /** Expected colours: 60 days ending today (2026-11-13), the first 10 without data. */
+    private static List<String> expectedColors(Map<String, String> special) {
+        List<String> colors = new ArrayList<>();
+        LocalDate first = LocalDate.parse("2026-09-15");
+        for (int i = 0; i < 60; i++) {
+            LocalDate date = first.plusDays(i);
+            colors.add(special.getOrDefault(date.toString(), date.isBefore(LocalDate.parse("2026-09-25")) ? "grey" : "green"));
+        }
+        return colors;
+    }
+
+    @Test
+    void barHasSixtySegmentsWithColorsForFixtureData() throws Exception {
+        barFixture();
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        List<String> expected = expectedColors(Map.of(
+                "2026-10-01", "yellow", "2026-10-02", "red", "2026-10-03", "orange",
+                "2026-10-04", "blue", "2026-10-05", "yellow"));
+
+        Response page = get(server, "/", "status.example.com");
+        assertEquals(expected, pageColors(page, "website"));
+        // Services without history: 60 grey segments, uptime "—".
+        assertEquals(java.util.Collections.nCopies(60, "grey"), pageColors(page, "creative"));
+        String creative = serviceHtml(page, "creative");
+        assertTrue(creative.contains("<span class=\"label\">24h</span> —"));
+        String website = serviceHtml(page, "website");
+        assertTrue(website.contains("<span class=\"label\">24h</span> 100%"));
+        assertTrue(website.contains("<span class=\"label\">60d</span> 99.77%"));
+        assertTrue(website.contains("<span class=\"dot state-up\">"));
+        // Tooltip and link of one segment.
+        assertTrue(website.contains("href=\"/service/website?view=calendar&amp;day=2026-10-02\" "
+                + "title=\"2026-10-02: 91.66% uptime, 2h down, 1 outage\""));
+        assertTrue(website.contains("title=\"2026-10-01: 99.3% uptime, 10m down, 1 outage\""));
+        assertTrue(website.contains("title=\"2026-10-04: 100% uptime, no downtime, 0 outages, 1 planned maintenance\""));
+        assertTrue(website.contains("title=\"2026-09-15: no data\""));
+
+        JsonObject api = apiEndpoint(get(server, "/api/status", "status.example.com"), "website");
+        JsonArray days = api.getAsJsonArray("days");
+        assertEquals(60, days.size());
+        List<String> apiColors = new ArrayList<>();
+        for (JsonElement day : days) apiColors.add(day.getAsJsonObject().get("color").getAsString());
+        assertEquals(expected, apiColors);
+        JsonObject oct2 = days.get(17).getAsJsonObject();
+        assertEquals("2026-10-02", oct2.get("date").getAsString());
+        assertEquals(91.66, oct2.get("uptime").getAsDouble());
+        assertEquals(7200, oct2.get("downtimeSeconds").getAsLong());
+        assertEquals(1, oct2.get("events").getAsInt());
+        assertTrue(days.get(0).getAsJsonObject().get("uptime").isJsonNull());
+        assertEquals("2026-11-13", days.get(59).getAsJsonObject().get("date").getAsString());
+        assertEquals(100.0, api.getAsJsonObject("uptime").get("24h").getAsDouble());
+        assertEquals(99.77, api.getAsJsonObject("uptime").get("60d").getAsDouble());
+        JsonObject none = apiEndpoint(get(server, "/api/status", "status.example.com"), "survival");
+        assertTrue(none.getAsJsonObject("uptime").get("60d").isJsonNull());
+    }
+
+    @Test
+    void barColorThresholdsAreConfigurable() throws Exception {
+        barFixture();
+        dashboard = new DashboardConfig("Status", 99.5, 98.0, 90.0);
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        List<String> expected = expectedColors(Map.of(
+                "2026-10-01", "yellow", "2026-10-02", "orange", "2026-10-03", "orange",
+                "2026-10-04", "blue", "2026-10-05", "green"));
+        assertEquals(expected, pageColors(get(server, "/", "status.example.com"), "website"));
+    }
+
+    @Test
+    void pageStructure() throws Exception {
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        String body = get(server, "/", "status.example.com").body();
+        assertTrue(body.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"));
+        assertTrue(body.contains("<meta http-equiv=\"refresh\" content=\"60\">"));
+        assertTrue(body.contains("<h2>Websites</h2><span class=\"summary summary-ok\">All operational</span>"));
+        assertTrue(body.contains("<h2>Minecraft servers</h2><span class=\"summary summary-down\">1 of 2 down</span>"));
+        assertTrue(body.contains("60 days ago</span><span>today</span>"));
+    }
+
+    // ---- fixture and parsing helpers ----
+
+    private void history(String id, String coverageFrom, String coverageTo, String... events) throws Exception {
+        Path dir = dataDir.resolve("endpoints").resolve(id);
+        Files.createDirectories(dir.resolve("events"));
+        Files.writeString(dir.resolve("coverage.json"),
+                "[{\"start\":\"" + coverageFrom + "\",\"end\":\"" + coverageTo + "\"}]\n");
+        StringBuilder lines = new StringBuilder();
+        for (String event : events) lines.append(event.replace("%ID%", id)).append('\n');
+        Files.writeString(dir.resolve("events/2026.jsonl"), lines.toString());
+    }
+
+    private static String event(String kind, String start, String end, String message) {
+        JsonObject o = new JsonObject();
+        o.addProperty("id", java.util.UUID.randomUUID().toString());
+        o.addProperty("endpointId", "%ID%");
+        o.addProperty("kind", kind);
+        o.addProperty("start", start);
+        o.addProperty("end", end);
+        o.addProperty("firstFailureMessage", message);
+        o.addProperty("lastFailureMessage", message);
+        o.addProperty("lastFailureAt", end);
+        o.add("notes", new JsonArray());
+        o.addProperty("endedUnobserved", false);
+        o.addProperty("endedByConfigChange", false);
+        return o.toString();
+    }
+
+    private static String serviceHtml(Response page, String id) {
+        int start = page.body().indexOf("data-service=\"" + id + "\"");
+        assertTrue(start >= 0, "no row for " + id);
+        return page.body().substring(start, page.body().indexOf("</li>", start));
+    }
+
+    private static List<String> pageColors(Response page, String id) {
+        List<String> colors = new ArrayList<>();
+        Matcher m = Pattern.compile("class=\"seg seg-([a-z]+)\"").matcher(serviceHtml(page, id));
+        while (m.find()) colors.add(m.group(1));
+        return colors;
+    }
+
+    private static JsonObject apiEndpoint(Response response, String id) {
+        JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
+        for (JsonElement category : root.getAsJsonArray("categories")) {
+            for (JsonElement service : category.getAsJsonObject().getAsJsonArray("endpoints")) {
+                if (service.getAsJsonObject().get("id").getAsString().equals(id)) return service.getAsJsonObject();
+            }
+        }
+        throw new AssertionError("no endpoint " + id);
     }
 
     @Test
