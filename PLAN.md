@@ -676,9 +676,11 @@ endpoint objects appear only inside `categories[].endpoints`.)
   `sessions.resetSession(request)` at login (new ID, against session fixation);
   `sessions.deleteSession(request)` at logout.
 - Cookie: `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` over HTTPS. CSRF tokens
-  protect all state-changing POSTs regardless. If `request.isSecure()` doesn't reflect
-  `X-Forwarded-Proto` from trusted proxies, work around it in HealthChecker (record it
-  under Decisions); don't patch SiggiHTTP. Any other cookie HealthChecker sets
+  protect all state-changing POSTs regardless. `Secure` comes from `request.isSecure()`;
+  SiggiHTTP's trusted IPs are cleared (`clearTrustedIPs()`, which also drops loopback and
+  Cloudflare) and set to `server.trustedProxies`, so only those proxies can set
+  `X-Forwarded-Proto`. The proxy must overwrite that header, not pass the client's one
+  through. Don't patch SiggiHTTP. Any other cookie HealthChecker sets
   is built with `CookieBakery`.
 - Logout is a POST with a CSRF token.
 - Configurable lifetime (default 7 days, sliding: idle timeout, and the cookie's
@@ -1293,14 +1295,15 @@ them; see CLAUDE.md.
   under `/static/` is 404. `run` doesn't start the web server yet; it's started with the scheduler
   and shutdown handling.
 - `server.trustedProxies` entries are IP addresses or CIDR ranges (IPv4 or IPv6, literals only, no DNS),
-  validated at config load; an empty list trusts nobody. SiggiHTTP always trusts loopback and
-  Cloudflare for `X-Forwarded-For`/`-Proto`, so `request.getIPAddress()` and `request.isSecure()` are
-  not used: `TrustedProxies` starts from the socket peer (`getNextHopAddress()`) and, while the
+  validated at config load; an empty list trusts nobody. `WebServer` calls SiggiHTTP's
+  `clearTrustedIPs()` (no private ranges, loopback or Cloudflare) and `trustIP()` for each entry; an entry
+  SiggiHTTP can't parse is a startup error. HTTPS = `request.isSecure()`, i.e. `X-Forwarded-Proto: https`
+  from a trusted peer (the whole header value, so the proxy must overwrite it rather than append). The
+  client address doesn't use `request.getIPAddress()`, which also believes `CF-Connecting-IP` from any
+  trusted peer: `TrustedProxies` starts from the socket peer (`getNextHopAddress()`) and, while the
   current hop is trusted, walks `X-Forwarded-For` (all header lines, comma-separated) from the right;
   it stops at the first untrusted hop or at an entry that isn't an IP literal (then the last trusted
-  hop is the client). HTTPS = the nearest (last) `X-Forwarded-Proto` entry from a trusted peer is
-  `https`, since HealthChecker never terminates TLS itself. SiggiHTTP's own trusted list is narrowed
-  from its private-range defaults to the configured proxies.
+  hop is the client).
 - `ViewFilter` (app, package `web.view`): builds `EndpointView` / `CheckView` / `EventView` / `NoteView`
   records from an `Endpoint`, its `EndpointStatus`, `CheckRecord`s and `HistoryEvent`s for a `Viewer`
   (user name + `view.private`); a field the viewer may not see is `null`. Uptime and day summaries
@@ -1461,11 +1464,9 @@ them; see CLAUDE.md.
   `Max-Age`); `login` uses `resetSession` (new ID and new CSRF token); `logout` uses `deleteSession`; `csrfToken` opens a
   session only when there's no token yet (the login form), so a pre-login session exists and is replaced at login.
   CSRF tokens come from the `csrf` form field or the `X-CSRF-Token` header (JSON POSTs), compared with
-  `MessageDigest.isEqual`; `requireCsrf` answers `403` (plain text) on a missing or wrong token. Workaround for
-  SiggiHTTP: `Sessions` decides `Secure` with `request.isSecure()`, which always trusts loopback and Cloudflare, so after
-  every session call `SessionManager` rewrites the session's `Set-Cookie` headers with `Secure` exactly when
-  `TrustedProxies.isSecure` says HTTPS (keeping only the last session cookie header when a read and a write both set
-  it). `run` creates the `SessionManager`; the viewer stays anonymous until users and login are wired up in the next
+  `MessageDigest.isEqual`; `requireCsrf` answers `403` (plain text) on a missing or wrong token. `Secure` is
+  SiggiHTTP's (`request.isSecure()`, trusting only `server.trustedProxies`). After each session call `SessionManager`
+  keeps only the last session `Set-Cookie` header, since a read and a write in one request may both set it. `run` creates the `SessionManager`; the viewer stays anonymous until users and login are wired up in the next
   M9 steps.
 - Password hashing (app, `auth.PasswordHasher`): JDK `PBKDF2WithHmacSHA256`; new hashes use 600000 iterations, a
   16-byte `SecureRandom` salt and a 32-byte hash, written as `pbkdf2-sha256$<iter>$<salt>$<hash>` in standard Base64

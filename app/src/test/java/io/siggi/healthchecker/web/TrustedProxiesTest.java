@@ -62,14 +62,12 @@ class TrustedProxiesTest {
         TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.1"));
         assertEquals("203.0.113.1", client(p, "203.0.113.1", "198.51.100.2"));
         assertEquals("127.0.0.1", client(p, "127.0.0.1", "198.51.100.2"));
-        assertFalse(p.isSecure(ip("203.0.113.1"), List.of("https")));
     }
 
     @Test
     void noTrustedProxiesMeansNoForwarding() {
         TrustedProxies p = TrustedProxies.parse(List.of());
         assertEquals("127.0.0.1", client(p, "127.0.0.1", "198.51.100.2"));
-        assertFalse(p.isSecure(ip("127.0.0.1"), List.of("https")));
     }
 
     @Test
@@ -79,10 +77,6 @@ class TrustedProxiesTest {
         assertEquals("198.51.100.2", client(p, "10.0.0.1", "198.51.100.2"));
         assertEquals("198.51.100.2", client(p, "::1", "198.51.100.2"));
         assertEquals("2001:db8:0:0:0:0:0:1", client(p, "10.0.0.1", "[2001:db8::1]"));
-        assertTrue(p.isSecure(ip("10.0.0.1"), List.of("https")));
-        assertTrue(p.isSecure(ip("10.0.0.1"), List.of("HTTPS")));
-        assertFalse(p.isSecure(ip("10.0.0.1"), List.of("http")));
-        assertFalse(p.isSecure(ip("10.0.0.1"), null));
     }
 
     @Test
@@ -102,12 +96,5 @@ class TrustedProxiesTest {
         assertEquals("10.0.0.1", client(p, "10.0.0.1", "unknown"));
         assertEquals("10.2.3.4", client(p, "10.0.0.1", "198.51.100.7, garbage, 10.2.3.4"));
         assertEquals("10.0.0.1", client(p, "10.0.0.1", "198.51.100.7, "));
-    }
-
-    @Test
-    void forwardedProtoUsesNearestEntry() {
-        TrustedProxies p = TrustedProxies.parse(List.of("10.0.0.0/8"));
-        assertTrue(p.isSecure(ip("10.0.0.1"), List.of("http, https")));
-        assertFalse(p.isSecure(ip("10.0.0.1"), List.of("https, http")));
     }
 }

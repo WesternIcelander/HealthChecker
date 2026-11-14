@@ -59,7 +59,7 @@ class LoginPageTest {
     private void start(boolean localEnabled, String publicBaseUrl) throws Exception {
         web = new WebServer(new ServerConfig(0, "127.0.0.1", publicBaseUrl, List.of("127.0.0.1"),
                 UnknownHostsPolicy.DEFAULT));
-        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
+        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7));
         SiteResolver sites = new SiteResolver(List.of(), "Status", publicBaseUrl, UnknownHostsPolicy.DEFAULT,
                 web.trustedProxies());
         LoginRateLimiter limiter = new LoginRateLimiter(3, Duration.ofMinutes(15), Clock.systemUTC());

@@ -8,12 +8,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Decides which forwarding headers to believe, following {@code server.trustedProxies}.
+ * The configured {@code server.trustedProxies}, and the client address they report.
  * <p>
- * SiggiHTTP always trusts loopback and Cloudflare addresses for {@code X-Forwarded-For} and
- * {@code X-Forwarded-Proto}, so {@link HTTPRequest#getIPAddress()} and {@link HTTPRequest#isSecure()}
- * can't be restricted to the configured proxies. HealthChecker therefore works from the socket's
- * peer address ({@link HTTPRequest#getNextHopAddress()}) and only this class reads those headers.
+ * {@link WebServer} gives SiggiHTTP exactly these addresses, so {@link HTTPRequest#isSecure()} only
+ * believes {@code X-Forwarded-Proto} from them. The client address is still worked out here from the
+ * socket's peer ({@link HTTPRequest#getNextHopAddress()}) and {@code X-Forwarded-For}, because
+ * {@link HTTPRequest#getIPAddress()} also believes {@code CF-Connecting-IP} from any trusted peer,
+ * which a proxy that doesn't strip it would pass through from the client.
  */
 public final class TrustedProxies {
     private final List<IpRange> ranges;
@@ -70,20 +71,6 @@ public final class TrustedProxies {
     /** Whether the connection's peer is a trusted proxy. */
     public boolean isFromTrustedProxy(HTTPRequest request) {
         return isTrusted(request.getNextHopAddress().getAddress());
-    }
-
-    /**
-     * Whether the client used HTTPS. HealthChecker doesn't terminate TLS itself, so this is only
-     * true when a trusted proxy says so in {@code X-Forwarded-Proto} (its nearest, last entry).
-     */
-    public boolean isSecure(HTTPRequest request) {
-        return isSecure(request.getNextHopAddress().getAddress(), request.getHeaders("X-Forwarded-Proto"));
-    }
-
-    public boolean isSecure(InetAddress nextHop, List<String> forwardedProto) {
-        if (forwardedProto == null || forwardedProto.isEmpty() || !isTrusted(nextHop)) return false;
-        List<String> values = splitList(forwardedProto);
-        return !values.isEmpty() && values.getLast().equalsIgnoreCase("https");
     }
 
     private static List<String> splitList(List<String> headerLines) {

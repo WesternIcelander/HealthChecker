@@ -3,7 +3,7 @@ package io.siggi.healthchecker.auth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-import io.siggi.healthchecker.web.TrustedProxies;
+import io.siggi.healthchecker.web.WebServer;
 import io.siggi.http.HTTPRequest;
 import io.siggi.http.cookie.SameSite;
 import io.siggi.http.session.SessionHandle;
@@ -31,10 +31,9 @@ import java.util.Optional;
  *       the cookie's {@code Max-Age}.</li>
  *   <li>{@link #login} starts a new session with a new ID (against session fixation),
  *       {@link #logout} deletes it and clears the cookie.</li>
- *   <li>The session cookie is {@code Path=/; HttpOnly; SameSite=Lax}, plus {@code Secure} exactly when
- *       {@link TrustedProxies#isSecure} says the client used HTTPS. SiggiHTTP decides {@code Secure} with
- *       {@link HTTPRequest#isSecure()}, which always trusts loopback and Cloudflare, so the session
- *       cookie headers are rewritten after every session call.</li>
+ *   <li>The session cookie is {@code Path=/; HttpOnly; SameSite=Lax}, plus {@code Secure} when
+ *       {@link HTTPRequest#isSecure()} says the client used HTTPS. {@link WebServer} limits SiggiHTTP's
+ *       trusted IPs to {@code server.trustedProxies}, so only those can set {@code X-Forwarded-Proto}.</li>
  *   <li>The CSRF token lives in the session; forms send it as {@value #CSRF_FIELD}, scripts as the
  *       {@value #CSRF_HEADER} header.</li>
  * </ul>
@@ -56,14 +55,12 @@ public final class SessionManager {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Sessions sessions;
-    private final TrustedProxies trustedProxies;
 
     /**
      * @param directory where sessions are stored (created if missing), so logins survive restarts
      * @param lifetime  idle timeout; the cookie's {@code Max-Age} matches it (at least one second)
      */
-    public SessionManager(Path directory, Duration lifetime, TrustedProxies trustedProxies) {
-        this.trustedProxies = trustedProxies;
+    public SessionManager(Path directory, Duration lifetime) {
         this.sessions = new SessionsBuilder()
                 .setDirectory(directory.toFile())
                 .setExpireTime(lifetime.toMillis())
@@ -73,8 +70,8 @@ public final class SessionManager {
     }
 
     /** The standard setup: {@code {dataDir}/sessions}, lifetime {@code sessionDays}. */
-    public static SessionManager forDataDir(Path dataDir, int sessionDays, TrustedProxies trustedProxies) {
-        return new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(sessionDays), trustedProxies);
+    public static SessionManager forDataDir(Path dataDir, int sessionDays) {
+        return new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(sessionDays));
     }
 
     /**
@@ -103,7 +100,7 @@ public final class SessionManager {
         try {
             return sessions.readSession(request);
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -135,7 +132,7 @@ public final class SessionManager {
                 session.set(KEY_NAME, displayName);
             }
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -148,7 +145,7 @@ public final class SessionManager {
         try (SessionHandle session = sessions.openSession(request)) {
             values.forEach(session::set);
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -158,7 +155,7 @@ public final class SessionManager {
         try (SessionHandle session = sessions.openSession(request)) {
             return session.set(key, null);
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -167,7 +164,7 @@ public final class SessionManager {
         try {
             sessions.deleteSession(request);
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -187,7 +184,7 @@ public final class SessionManager {
             }
             return token;
         } finally {
-            fixCookies(request);
+            dropDuplicateCookies(request);
         }
     }
 
@@ -229,36 +226,27 @@ public final class SessionManager {
     }
 
     /**
-     * Rewrites the session cookie headers SiggiHTTP added: {@code Secure} as {@link TrustedProxies}
-     * decides, and only the last one kept (a read followed by a write may each have set it).
+     * Keeps only the last session cookie header: a read followed by a write in one request may each
+     * have set it.
      */
-    private void fixCookies(HTTPRequest request) {
+    private void dropDuplicateCookies(HTTPRequest request) {
         if (request.alreadyWrote()) return;
         String[] headers = request.response.getHeader("Set-Cookie");
         String prefix = sessions.getCookieName() + "=";
         int last = -1;
+        int count = 0;
         for (int i = 0; i < headers.length; i++) {
-            if (headers[i].startsWith(prefix)) last = i;
-        }
-        if (last < 0) return;
-        boolean secure = trustedProxies.isSecure(request);
-        request.response.deleteHeader("Set-Cookie");
-        for (int i = 0; i < headers.length; i++) {
-            if (!headers[i].startsWith(prefix)) {
-                request.response.addHeader("Set-Cookie", headers[i]);
-            } else if (i == last) {
-                request.response.addHeader("Set-Cookie", withSecure(headers[i], secure));
+            if (headers[i].startsWith(prefix)) {
+                last = i;
+                count++;
             }
         }
-    }
-
-    static String withSecure(String setCookie, boolean secure) {
-        List<String> parts = new ArrayList<>(List.of(setCookie.split("; ", -1)));
-        parts.removeIf(part -> part.equalsIgnoreCase("Secure"));
-        if (secure) {
-            int httpOnly = parts.indexOf("HttpOnly");
-            parts.add(httpOnly < 0 ? parts.size() : httpOnly + 1, "Secure");
+        if (count < 2) return;
+        request.response.deleteHeader("Set-Cookie");
+        for (int i = 0; i < headers.length; i++) {
+            if (!headers[i].startsWith(prefix) || i == last) {
+                request.response.addHeader("Set-Cookie", headers[i]);
+            }
         }
-        return String.join("; ", parts);
     }
 }

@@ -172,7 +172,7 @@ class EndpointEditorTest {
                 new User("ada", "Ada", Role.ADMIN, null, List.of(), false),
                 new User("max", "Max", MANAGER, null, List.of(), false)));
         web = new WebServer(new ServerConfig(0, "127.0.0.1", null, List.of(), UnknownHostsPolicy.DEFAULT));
-        SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
+        SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7));
         Permissions permissions = new Permissions(sessions, users::user);
         SiteResolver sites = new SiteResolver(List.of(), "Status", null, UnknownHostsPolicy.DEFAULT, web.trustedProxies());
         web.register("/test-login", request -> {

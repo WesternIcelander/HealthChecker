@@ -53,9 +53,11 @@ public final class WebServer implements AutoCloseable {
     }
 
     /**
-     * Narrows SiggiHTTP's own trusted list (used for e.g. {@code X-Forwarded-Host}) from its default
-     * private ranges to the configured proxies. SiggiHTTP still trusts loopback and Cloudflare
-     * regardless, which is why client address and scheme come from {@link TrustedProxies}.
+     * Makes SiggiHTTP trust exactly the configured proxies: no private ranges, loopback or Cloudflare
+     * by default. {@link HTTPRequest#isSecure()} (and so the session cookie's {@code Secure} flag) then
+     * believes {@code X-Forwarded-Proto} only from them.
+     *
+     * @throws IllegalArgumentException if SiggiHTTP can't parse a configured proxy
      */
     private void configureSiggiHttpTrust() {
         http.clearTrustedIPs();
@@ -63,8 +65,7 @@ public final class WebServer implements AutoCloseable {
             try {
                 http.trustIP(range.toString());
             } catch (IllegalArgumentException e) {
-                // SiggiHTTP's parser is less complete than ours; TrustedProxies stays authoritative.
-                LOG.log(System.Logger.Level.DEBUG, "SiggiHTTP can't parse trusted proxy " + range);
+                throw new IllegalArgumentException("server.trustedProxies: SiggiHTTP can't parse " + range, e);
             }
         }
     }

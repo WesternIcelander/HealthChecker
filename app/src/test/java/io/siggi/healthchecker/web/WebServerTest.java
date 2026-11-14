@@ -38,7 +38,7 @@ class WebServerTest {
             TrustedProxies proxies = server.trustedProxies();
             request.response.setHeader("Content-Type", "text/plain; charset=utf-8");
             request.response.write(proxies.clientAddress(request).getHostAddress()
-                    + " " + (proxies.isSecure(request) ? "https" : "http"));
+                    + " " + (request.isSecure() ? "https" : "http"));
         });
         server.start();
         return server;

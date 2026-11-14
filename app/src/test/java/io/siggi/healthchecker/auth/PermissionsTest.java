@@ -108,7 +108,7 @@ class PermissionsTest {
         List<CategoryConfig> categories = List.of(new CategoryConfig("web", "Websites", null));
 
         web = new WebServer(new ServerConfig(0, "127.0.0.1", null, List.of(), UnknownHostsPolicy.DEFAULT));
-        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
+        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7));
         Permissions permissions = new Permissions(sessions, id -> users.get().user(id));
         SiteResolver sites = new SiteResolver(List.of(), "Status", null, UnknownHostsPolicy.DEFAULT,
                 web.trustedProxies());

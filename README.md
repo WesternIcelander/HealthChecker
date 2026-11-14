@@ -470,7 +470,8 @@ proxy (nginx, Caddy, Apache, a load balancer) that handles HTTPS.
   - `X-Forwarded-For` gives the client IP used for login rate limiting and the audit
     log.
   - `X-Forwarded-Proto: https` marks the request as HTTPS, which adds `Secure` to the
-    session cookie.
+    session cookie. The proxy must overwrite this header with the scheme the client
+    used, not pass on or append to a value the client sent.
   - `Host` / `X-Forwarded-Host` selects the [site](#sites).
 - Set `publicBaseUrl` (globally and/or per site) to the external `https://` URL. Links
   and redirects are built only from it, never from the request's `Host`.

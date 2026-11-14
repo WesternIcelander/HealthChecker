@@ -102,7 +102,7 @@ class ProviderLoginPageTest {
 
     private void start(boolean localEnabled, String authJson, List<SiteConfig> siteConfigs) throws Exception {
         web = new WebServer(new ServerConfig(0, "127.0.0.1", BASE, List.of("127.0.0.1"), UnknownHostsPolicy.DEFAULT));
-        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7), web.trustedProxies());
+        sessions = new SessionManager(dataDir.resolve("sessions"), Duration.ofDays(7));
         SiteResolver sites = new SiteResolver(siteConfigs, "Status", BASE, UnknownHostsPolicy.DEFAULT,
                 web.trustedProxies());
         JsonObject auth = JsonParser.parseString(authJson).getAsJsonObject();

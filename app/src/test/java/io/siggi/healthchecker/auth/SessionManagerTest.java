@@ -63,7 +63,7 @@ class SessionManagerTest {
         WebServer web = new WebServer(new ServerConfig(0, "127.0.0.1", null, List.of(trustedProxies),
                 UnknownHostsPolicy.DEFAULT));
         servers.add(web);
-        SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), lifetime, web.trustedProxies());
+        SessionManager sessions = new SessionManager(dataDir.resolve("sessions"), lifetime);
         // A page with a form: hands out the CSRF token.
         web.register("/form", request -> text(request, sessions.csrfToken(request)));
         // A page that only reads the session.
@@ -187,20 +187,10 @@ class SessionManagerTest {
 
     @Test
     void forwardedProtoFromUntrustedPeerIsIgnored() throws Exception {
-        // SiggiHTTP itself always trusts loopback, so this checks HealthChecker's own decision.
+        // No trusted proxies: SiggiHTTP must not believe loopback either.
         Server s = start();
         String c = sessionCookie(s, get(s, "/form", "X-Forwarded-Proto", "https"));
         assertFalse(c.contains("Secure"), c);
-    }
-
-    @Test
-    void secureAttributeRewrite() {
-        String base = "SessID=ab; Path=/; HttpOnly; SameSite=Lax; Max-Age=5";
-        String secure = "SessID=ab; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=5";
-        assertEquals(secure, SessionManager.withSecure(base, true));
-        assertEquals(secure, SessionManager.withSecure(secure, true));
-        assertEquals(base, SessionManager.withSecure(secure, false));
-        assertEquals("SessID=; Path=/; Secure", SessionManager.withSecure("SessID=; Path=/", true));
     }
 
     // ---- anonymous visitors ------------------------------------------------------------

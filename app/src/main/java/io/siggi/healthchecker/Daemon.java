@@ -212,8 +212,7 @@ final class Daemon implements AutoCloseable {
                     List<String> known = channels.stream().filter(notifications.channels()::contains).toList();
                     if (!known.isEmpty()) notifications.send(known, n);
                 }, clock.instant()));
-        sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()),
-                web.trustedProxies());
+        sessions = SessionManager.forDataDir(config.dataDir(), SessionManager.sessionDays(config.auth()));
         UserDirectory users = UserDirectory.parse(config.auth());
         Permissions permissions = new Permissions(sessions, users);
         AuthProviders providers = AuthProviders.parse(config.auth(), config.server(), config.sites());
