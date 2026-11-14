@@ -398,6 +398,71 @@ main {
 
 .calendar .pager { margin-top: 16px; }
 
+a.cal-day:hover, a.cal-day:focus-visible { opacity: 0.75; }
+a.cal-day:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.cal-selected, .cal-open { outline: 2px solid var(--fg); outline-offset: 1px; }
+
+/* ---- day details: day page, ?day= panel and popover ---- */
+
+.day-panel {
+  margin-top: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.day-title { margin: 0 0 8px; font-size: 1.1rem; }
+h2.day-title { font-size: 1.4rem; }
+.day-facts { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+.day-empty { margin: 0; font-size: 0.9rem; }
+.day-events { list-style: none; margin: 0; padding: 0; }
+.day-event + .day-event { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.day-event-title { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+
+.day-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.day-event-whole { margin: 0 0 6px; font-size: 0.8rem; }
+.day-link, .day-close { margin: 10px 0 0; font-size: 0.9rem; }
+
+.popover {
+  position: absolute;
+  z-index: 20;
+  width: min(340px, calc(100vw - 16px));
+  max-height: min(70vh, 480px);
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+}
+
+.popover[hidden] { display: none; }
+.popover:focus { outline: none; }
+.popover .day-title { padding-right: 28px; }
+
+.popover-close {
+  position: absolute;
+  top: 6px; right: 8px;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.popover-close:hover, .popover-close:focus-visible { color: var(--fg); }
+
 /* ---- tooltip (app.js) ---- */
 
 .tooltip {

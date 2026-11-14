@@ -25,11 +25,14 @@ import io.siggi.healthchecker.web.view.Viewer;
 import io.siggi.http.HTTPRequest;
 
 import java.time.Clock;
-import java.time.Instant;
 import java.time.DayOfWeek;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -54,7 +57,10 @@ import static io.siggi.healthchecker.web.page.PageSupport.write;
  * {@value #PAGE_SIZE} per page, each expandable to show its visible notes. Each event also has a
  * permalink page, {@code /service/{id}/event/{eventId}}. The calendar view
  * ({@code ?view=calendar&page=N}) shows {@value #CALENDAR_MONTHS} months per page as Monday-first
- * grids of colour-only day blocks; page 0 ends with the current month.
+ * grids of colour-only day blocks; page 0 ends with the current month. Each day up to today links
+ * to its day page, {@code /service/{id}/day/{yyyy-mm-dd}} (uptime, downtime and the events
+ * overlapping the day, clipped to it), which {@code app.js} shows as a popover instead.
+ * {@code ?day=yyyy-mm-dd} opens the calendar page containing that day with its details open.
  *
  * <p>Answers {@code 404} (by writing nothing) for unknown ids, for endpoints outside the
  * request's site scope (even for privileged viewers), for endpoints the viewer may not see
@@ -66,7 +72,10 @@ public final class ServicePage {
     private static final String PREFIX = "/service/";
     private static final Pattern ID = Pattern.compile("[a-z0-9-]+");
     private static final Pattern EVENT_ID = Pattern.compile("[A-Za-z0-9-]{1,64}");
+    private static final Pattern DATE = Pattern.compile("[0-9]{4}-[0-9]{2}-[0-9]{2}");
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter TIME_OF_DAY = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final DateTimeFormatter LONG_DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM uuuu", Locale.ENGLISH);
     /** Events per page of the list view. */
     static final int PAGE_SIZE = 25;
     /** Months per page of the calendar view. */
@@ -161,6 +170,89 @@ public final class ServicePage {
     }
 
     /**
+     * An event as shown for one day: {@code from}–{@code to} is the part of it within the day
+     * (an ongoing event on today runs until now).
+     *
+     * @param startsEarlier whether the event started before the day
+     * @param endsLater     whether the event went on after the day
+     */
+    record DayEvent(EventView event, Instant from, Instant to, boolean startsEarlier, boolean endsLater) {
+        Duration duration() {
+            return Duration.between(from, to);
+        }
+
+        /** Still ongoing and not cut off by the end of the day, i.e. the day is today. */
+        boolean ongoing() {
+            return event.ongoing() && !endsLater;
+        }
+    }
+
+    /** What the day popover and the day page show: the day's summary and its events, oldest first. */
+    record DayDetail(LocalDate date, DaySummary summary, List<DayEvent> events) {
+    }
+
+    /** A {@code yyyy-mm-dd} date, or {@code null} if the value isn't one. */
+    static LocalDate parseDate(String value) {
+        if (value == null || !DATE.matcher(value).matches()) return null;
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    /** The calendar page whose months include {@code day} (clamped to {@link #MAX_CALENDAR_PAGE}). */
+    static int calendarPageFor(YearMonth current, LocalDate day) {
+        long back = Math.max(0, ChronoUnit.MONTHS.between(YearMonth.from(day), current));
+        return (int) Math.min(back / CALENDAR_MONTHS, MAX_CALENDAR_PAGE);
+    }
+
+    /** The first day with coverage, or {@code null} without any coverage. */
+    private LocalDate firstCovered(String id) {
+        return history.coverage(id).stream()
+                .map(p -> LocalDate.ofInstant(p.start(), uptime.zone()))
+                .min(Comparator.naturalOrder()).orElse(null);
+    }
+
+    /**
+     * The details of one day (up to today) as the viewer may see them: its summary (no data,
+     * without computing it, before the first coverage) and every event overlapping the day,
+     * clipped to it. Empty for days after today.
+     */
+    Optional<DayDetail> day(Service service, LocalDate date) {
+        String id = service.endpoint().id();
+        if (date.isAfter(uptime.today())) {
+            return Optional.empty();
+        }
+        LocalDate first = firstCovered(id);
+        DaySummary summary = first == null || date.isBefore(first)
+                ? new DaySummary(date, Uptime.NONE, 0, 0)
+                : uptime.day(id, date);
+        Instant dayStart = date.atStartOfDay(uptime.zone()).toInstant();
+        Instant dayEnd = date.plusDays(1).atStartOfDay(uptime.zone()).toInstant();
+        Instant now = clock.instant();
+        List<HistoryEvent> overlapping = new ArrayList<>();
+        for (HistoryEvent event : history.events(id)) {
+            Instant end = event.end() != null ? event.end() : (now.isAfter(event.start()) ? now : event.start());
+            boolean overlaps = event.start().isBefore(dayEnd) && end.isAfter(dayStart);
+            boolean instantInDay = !event.start().isBefore(dayStart) && event.start().isBefore(dayEnd);
+            if (overlaps || instantInDay) overlapping.add(event);
+        }
+        overlapping.sort(Comparator.comparing(HistoryEvent::start).thenComparing(HistoryEvent::id));
+        List<DayEvent> events = new ArrayList<>();
+        for (HistoryEvent event : overlapping) {
+            Optional<EventView> view = filter.event(service.viewer(), service.endpoint(), event);
+            if (view.isEmpty()) continue;
+            Instant end = event.end() != null ? event.end() : (now.isAfter(event.start()) ? now : event.start());
+            Instant from = event.start().isBefore(dayStart) ? dayStart : event.start();
+            boolean endsLater = end.isAfter(dayEnd) || (event.end() == null && !now.isBefore(dayEnd));
+            Instant to = end.isAfter(dayEnd) ? dayEnd : end;
+            events.add(new DayEvent(view.get(), from, to, event.start().isBefore(dayStart), endsLater));
+        }
+        return Optional.of(new DayDetail(date, summary, events));
+    }
+
+    /**
      * The months on calendar page {@code page}, oldest first: the {@value #CALENDAR_MONTHS} months
      * ending {@value #CALENDAR_MONTHS} × {@code page} months before {@code current}.
      */
@@ -183,9 +275,7 @@ public final class ServicePage {
         String id = service.endpoint().id();
         int shown = Math.max(0, Math.min(page, MAX_CALENDAR_PAGE));
         LocalDate today = uptime.today();
-        LocalDate firstCovered = history.coverage(id).stream()
-                .map(p -> LocalDate.ofInstant(p.start(), uptime.zone()))
-                .min(Comparator.naturalOrder()).orElse(null);
+        LocalDate firstCovered = firstCovered(id);
         List<CalendarMonth> months = new ArrayList<>(CALENDAR_MONTHS);
         for (YearMonth month : calendarMonths(YearMonth.from(today), shown)) {
             LocalDate first = month.atDay(1);
@@ -292,6 +382,8 @@ public final class ServicePage {
             servicePage(request, parts[0]);
         } else if (parts.length == 3 && parts[1].equals("event")) {
             eventPage(request, parts[0], parts[2]);
+        } else if (parts.length == 3 && parts[1].equals("day")) {
+            dayPage(request, parts[0], parts[2]);
         }
         // Anything else: nothing written → 404.
     }
@@ -306,12 +398,20 @@ public final class ServicePage {
         PageSupport.head(html, site, service.view().name() + " – " + site.title(), false);
         html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a></p>\n");
         headerHtml(html, header(service));
-        // The list view is the default: any ?view= other than "calendar" shows it.
-        boolean calendar = "calendar".equals(request.get().get("view"));
+        // The list view is the default: any ?view= other than "calendar" shows it. A valid
+        // ?day= up to today opens the calendar page containing that day, with its details open.
+        LocalDate today = uptime.today();
+        LocalDate day = parseDate(request.get().get("day"));
+        if (day != null && day.isAfter(today)) day = null;
+        boolean calendar = day != null || "calendar".equals(request.get().get("view"));
         tabsHtml(html, service, calendar);
-        int page = pageNumber(request.get().get("page"));
+        int page = day != null ? calendarPageFor(YearMonth.from(today), day) : pageNumber(request.get().get("page"));
         if (calendar) {
-            calendarHtml(html, service, calendar(service, page));
+            CalendarPage shown = calendar(service, page);
+            LocalDate selected = day;
+            DayDetail detail = selected == null || shown.months().stream().noneMatch(m -> m.month().equals(YearMonth.from(selected)))
+                    ? null : day(service, selected).orElse(null);
+            calendarHtml(html, service, shown, detail);
         } else {
             listHtml(html, service, events(service, page));
         }
@@ -352,6 +452,90 @@ public final class ServicePage {
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
     }
 
+    private void dayPage(HTTPRequest request, String id, String dateText) throws Exception {
+        LocalDate date = parseDate(dateText);
+        if (date == null) return; // nothing written → 404
+        Optional<Service> found = service(request, id);
+        if (found.isEmpty()) return;
+        Optional<DayDetail> detail = day(found.get(), date);
+        if (detail.isEmpty()) return; // a future day
+        request.allowedMethods("GET");
+        Service service = found.get();
+        Site site = service.site();
+        String serviceLink = site.link(PREFIX + service.view().id());
+        String calendarLink = site.link(PREFIX + service.view().id() + "?view=calendar&page="
+                + calendarPageFor(YearMonth.from(uptime.today()), date) + "#calendar");
+        StringBuilder html = new StringBuilder(8192);
+        PageSupport.head(html, site, service.view().name() + " – " + date + " – " + site.title(), false);
+        html.append("<p class=\"crumbs\"><a href=\"").append(Html.escape(site.link("/"))).append("\">All services</a> › ")
+                .append("<a href=\"").append(Html.escape(serviceLink)).append("\">")
+                .append(Html.escape(service.view().name())).append("</a> › ")
+                .append("<a href=\"").append(Html.escape(calendarLink)).append("\">Calendar</a></p>\n");
+        dayDetailHtml(html, service, detail.get(), "h2");
+        PageSupport.foot(html, site);
+        write(request, "200 OK", "text/html; charset=utf-8", html.toString());
+    }
+
+    /**
+     * A day's details, shared by the day page, the {@code ?day=} panel and (fetched from the day
+     * page by {@code app.js}) the popover: date, uptime, downtime and the events overlapping the
+     * day with their times clipped to it, each linking to its permalink, with its visible notes.
+     */
+    private void dayDetailHtml(StringBuilder html, Service service, DayDetail detail, String heading) {
+        Site site = service.site();
+        String servicePath = PREFIX + service.view().id();
+        DaySummary summary = detail.summary();
+        html.append("<section class=\"day-detail\" data-date=\"").append(detail.date())
+                .append("\" aria-labelledby=\"day-title-").append(detail.date()).append("\">\n")
+                .append('<').append(heading).append(" class=\"day-title\" id=\"day-title-").append(detail.date()).append("\">")
+                .append("<time datetime=\"").append(detail.date()).append("\">").append(LONG_DATE.format(detail.date()))
+                .append("</time></").append(heading).append(">\n<dl class=\"facts day-facts\">\n");
+        fact(html, "day-uptime", "Uptime", summary.uptime().format());
+        String downtime = !summary.uptime().hasData() ? Uptime.NO_DATA
+                : summary.uptime().downtime().isZero() ? "none" : Durations.format(summary.uptime().downtime());
+        fact(html, "day-downtime", "Downtime", downtime);
+        fact(html, "day-outages", "Outages", Integer.toString(summary.events()));
+        if (summary.maintenanceEvents() > 0) {
+            fact(html, "day-maintenance", "Planned maintenance", Integer.toString(summary.maintenanceEvents()));
+        }
+        html.append("</dl>\n");
+        if (detail.events().isEmpty()) {
+            html.append("<p class=\"muted day-empty\">No downtime on this day.</p>\n");
+        } else {
+            Instant now = clock.instant();
+            html.append("<ol class=\"day-events\">\n");
+            for (DayEvent day : detail.events()) {
+                EventView e = day.event();
+                html.append("<li class=\"day-event").append(day.ongoing() ? " event-ongoing" : "").append("\" data-event=\"")
+                        .append(Html.escape(e.id())).append("\">\n<p class=\"day-event-title\"><a href=\"")
+                        .append(Html.escape(site.link(servicePath + "/event/" + e.id()))).append("\">")
+                        .append(Html.escape(e.title())).append("</a></p>\n<p class=\"day-event-meta\"><span class=\"day-event-when\">")
+                        .append("<time datetime=\"").append(day.from()).append("\">")
+                        .append(day.startsEarlier() ? "00:00:00" : TIME_OF_DAY.format(day.from().atZone(uptime.zone())))
+                        .append("</time> – <span class=\"event-end\">");
+                if (day.ongoing()) {
+                    html.append("ongoing");
+                } else {
+                    html.append("<time datetime=\"").append(day.to()).append("\">")
+                            .append(day.endsLater() ? "24:00:00" : TIME_OF_DAY.format(day.to().atZone(uptime.zone())))
+                            .append("</time>");
+                }
+                html.append("</span></span><span class=\"day-event-duration\"><span class=\"visually-hidden\">Duration on this day: </span>")
+                        .append(Durations.format(day.duration())).append("</span></p>\n");
+                if (day.startsEarlier() || day.endsLater()) {
+                    html.append("<p class=\"muted day-event-whole\">Whole outage: ").append(timeTag(e.start())).append(" – ")
+                            .append(e.ongoing() ? "ongoing" : timeTag(e.end())).append(", ")
+                            .append(Durations.format(e.duration(now))).append("</p>\n");
+                }
+                notesHtml(html, e.notes());
+                html.append("</li>\n");
+            }
+            html.append("</ol>\n");
+        }
+        html.append("<p class=\"day-link\"><a href=\"").append(Html.escape(site.link(servicePath + "/day/" + detail.date())))
+                .append("\">Open as page</a></p>\n</section>\n");
+    }
+
     /** The view tabs: plain links, the current one marked with {@code aria-current}. */
     private static void tabsHtml(StringBuilder html, Service service, boolean calendar) {
         String base = PREFIX + service.view().id() + "?view=";
@@ -370,7 +554,7 @@ public final class ServicePage {
      * The calendar view: each month a Monday-first grid of day blocks without text, coloured
      * like the bar (future days are empty outlines), with Earlier/Later links.
      */
-    private void calendarHtml(StringBuilder html, Service service, CalendarPage page) {
+    private void calendarHtml(StringBuilder html, Service service, CalendarPage page, DayDetail selected) {
         Site site = service.site();
         String base = PREFIX + service.view().id() + "?view=calendar&page=";
         html.append("<section class=\"calendar\" id=\"calendar\">\n<h3 class=\"visually-hidden\">Calendar</h3>\n")
@@ -388,14 +572,33 @@ public final class ServicePage {
                 html.append("<span class=\"cal-blank\" aria-hidden=\"true\"></span>");
             }
             for (CalendarDay day : month.days()) {
-                String tip = day.future() ? day.date() + ": upcoming" : PageSupport.tooltip(day.summary());
-                html.append("<span class=\"cal-day cal-").append(day.future() ? "future" : day.color().id())
-                        .append("\" data-date=\"").append(day.date()).append("\" role=\"img\" title=\"").append(Html.escape(tip))
-                        .append("\" aria-label=\"").append(Html.escape(tip)).append("\"></span>");
+                if (day.future()) {
+                    String tip = day.date() + ": upcoming";
+                    html.append("<span class=\"cal-day cal-future\" data-date=\"").append(day.date())
+                            .append("\" role=\"img\" title=\"").append(Html.escape(tip))
+                            .append("\" aria-label=\"").append(Html.escape(tip)).append("\"></span>");
+                    continue;
+                }
+                // Days up to today link to their day page; app.js shows it as a popover instead.
+                String tip = PageSupport.tooltip(day.summary());
+                boolean isSelected = selected != null && selected.date().equals(day.date());
+                html.append("<a class=\"cal-day cal-").append(day.color().id()).append(isSelected ? " cal-selected" : "")
+                        .append("\" href=\"").append(Html.escape(site.link(PREFIX + service.view().id() + "/day/" + day.date())))
+                        .append("\" data-date=\"").append(day.date()).append("\"").append(isSelected ? " aria-current=\"date\"" : "")
+                        .append(" title=\"").append(Html.escape(tip)).append("\" aria-label=\"").append(Html.escape(tip))
+                        .append("\"></a>");
             }
             html.append("</div>\n</div>\n");
         }
-        html.append("</div>\n<nav class=\"pager\" aria-label=\"Calendar pages\">");
+        html.append("</div>\n");
+        if (selected != null) {
+            // The ?day= panel; app.js turns it into the popover of the selected day.
+            html.append("<div class=\"day-panel\" id=\"day\">\n");
+            dayDetailHtml(html, service, selected, "h3");
+            html.append("<p class=\"day-close\"><a href=\"").append(Html.escape(site.link(base + page.page())))
+                    .append("#calendar\">Close</a></p>\n</div>\n");
+        }
+        html.append("<nav class=\"pager\" aria-label=\"Calendar pages\">");
         if (page.hasEarlier()) {
             html.append("<a rel=\"next\" href=\"").append(Html.escape(site.link(base + (page.page() + 1))))
                     .append("#calendar\">← Earlier</a>");

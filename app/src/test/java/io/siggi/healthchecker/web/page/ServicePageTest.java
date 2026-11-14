@@ -508,8 +508,8 @@ class ServicePageTest {
         assertTrue(start >= 0, month);
         int end = body.indexOf("</div>\n</div>", start);
         List<String> colors = new ArrayList<>();
-        Matcher m = Pattern.compile("<span class=\"cal-day cal-([a-z]+)\" data-date=\"" + month
-                + "-[0-9]{2}\"[^>]*></span>").matcher(body.substring(start, end));
+        Matcher m = Pattern.compile("<(?:a|span) class=\"cal-day cal-([a-z]+)\"(?: href=\"[^\"]*\")? data-date=\"" + month
+                + "-[0-9]{2}\"[^>]*></(?:a|span)>").matcher(body.substring(start, end));
         while (m.find()) colors.add(m.group(1));
         return colors;
     }
@@ -615,7 +615,11 @@ class ServicePageTest {
         assertEquals("green", nov.get(12));
         assertEquals(17, nov.subList(13, 30).size());
         assertTrue(nov.subList(13, 30).stream().allMatch("future"::equals), nov.toString());
-        assertTrue(body.contains("data-date=\"2026-11-02\" role=\"img\" title=\"2026-11-02: 99.3% uptime, 10m down, 1 outage\""));
+        // Days up to today link to their day page; future days aren't links.
+        assertTrue(body.contains("<a class=\"cal-day cal-yellow\" href=\"/service/website/day/2026-11-02\" data-date=\"2026-11-02\""
+                + " title=\"2026-11-02: 99.3% uptime, 10m down, 1 outage\""));
+        assertTrue(body.contains("href=\"/service/website/day/2026-09-10\""));
+        assertFalse(body.contains("/day/2026-11-14"));
         assertTrue(body.contains("data-date=\"2026-11-20\" role=\"img\" title=\"2026-11-20: upcoming\""));
         assertTrue(body.contains("title=\"2026-09-10: no data\""));
 
@@ -628,7 +632,7 @@ class ServicePageTest {
         assertEquals(6, blanks(body, "2026-11"));
         // Colour only: no text inside any day block.
         assertEquals(30 + 31 + 30, count(body, "class=\"cal-day "));
-        Matcher empty = Pattern.compile("<span class=\"cal-day [^>]*></span>").matcher(body);
+        Matcher empty = Pattern.compile("<(a|span) class=\"cal-day [^>]*></\\1>").matcher(body);
         assertEquals(30 + 31 + 30, empty.results().count());
 
         // A page entirely before the first coverage still renders, all grey.
@@ -642,6 +646,177 @@ class ServicePageTest {
         assertTrue(dayColors(none, "2026-11").subList(0, 13).stream().allMatch("grey"::equals));
         assertNoTargets(body);
         assertNoTargets(none);
+    }
+
+    // ---- day page, ?day= and popover content ----
+
+    /** The section with a day's details, from the day page or the ?day= panel. */
+    private static String dayDetail(String body) {
+        int start = body.indexOf("<section class=\"day-detail\"");
+        assertTrue(start >= 0, "no day detail");
+        return body.substring(start, body.indexOf("</section>", start));
+    }
+
+    private static List<String> dayEventIds(String detail) {
+        List<String> ids = new ArrayList<>();
+        Matcher m = Pattern.compile("<li class=\"day-event[^\"]*\" data-event=\"([^\"]+)\"").matcher(detail);
+        while (m.find()) ids.add(m.group(1));
+        return ids;
+    }
+
+    @Test
+    void eventSpanningTwoDaysIsClippedOnBoth() throws Exception {
+        history("website", "2026-11-01T00:00:00Z", NOW.toString(),
+                event("ev-span", "2026-11-10T22:00:00Z", "2026-11-11T01:30:00Z"),
+                event("ev-other", "2026-11-11T08:00:00Z", "2026-11-11T08:10:00Z"),
+                event("ev-earlier", "2026-11-09T08:00:00Z", "2026-11-09T08:10:00Z"));
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+
+        Response first = get(server, "/service/website/day/2026-11-10", "status.example.com");
+        assertEquals(200, first.status());
+        String day10 = dayDetail(first.body());
+        assertEquals(List.of("ev-span"), dayEventIds(day10));
+        assertTrue(day10.contains("<span class=\"day-event-when\"><time datetime=\"2026-11-10T22:00:00Z\">22:00:00</time>"
+                + " – <span class=\"event-end\"><time datetime=\"2026-11-11T00:00:00Z\">24:00:00</time></span></span>"), day10);
+        assertTrue(day10.contains("Duration on this day: </span>2h</span>"), day10);
+        assertTrue(day10.contains("Whole outage: <time datetime=\"2026-11-10T22:00:00Z\">2026-11-10 22:00:00</time> – "
+                + "<time datetime=\"2026-11-11T01:30:00Z\">2026-11-11 01:30:00</time>, 3h 30m"), day10);
+        assertTrue(day10.contains("<dt>Uptime</dt><dd>91.66%</dd>"), day10);
+        assertTrue(day10.contains("<dt>Downtime</dt><dd>2h</dd>"), day10);
+        assertTrue(day10.contains("<dt>Outages</dt><dd>1</dd>"), day10);
+        assertTrue(day10.contains("<a href=\"/service/website/event/ev-span\">Name website outage</a>"), day10);
+        assertTrue(day10.contains("Tuesday, 10 November 2026"), day10);
+        assertTrue(first.body().contains("<a href=\"/service/website?view=calendar&amp;page=0#calendar\">Calendar</a>"));
+
+        String day11 = dayDetail(get(server, "/service/website/day/2026-11-11", "status.example.com").body());
+        assertEquals(List.of("ev-span", "ev-other"), dayEventIds(day11)); // oldest first
+        assertTrue(day11.contains("<span class=\"day-event-when\"><time datetime=\"2026-11-11T00:00:00Z\">00:00:00</time>"
+                + " – <span class=\"event-end\"><time datetime=\"2026-11-11T01:30:00Z\">01:30:00</time></span></span>"), day11);
+        assertTrue(day11.contains("Duration on this day: </span>1h 30m</span>"), day11);
+        assertTrue(day11.contains("<dt>Downtime</dt><dd>1h 40m</dd>"), day11);
+        assertTrue(day11.contains("<dt>Outages</dt><dd>2</dd>"), day11);
+        // The unclipped event has no "whole outage" line.
+        assertEquals(1, count(day11, "Whole outage"));
+
+        String day12 = dayDetail(get(server, "/service/website/day/2026-11-12", "status.example.com").body());
+        assertEquals(List.of(), dayEventIds(day12));
+        assertTrue(day12.contains("No downtime on this day."));
+        assertTrue(day12.contains("<dt>Uptime</dt><dd>100%</dd>"));
+        assertTrue(day12.contains("<dt>Downtime</dt><dd>none</dd>"));
+        // Before the first coverage: no data.
+        String before = dayDetail(get(server, "/service/website/day/2026-10-01", "status.example.com").body());
+        assertTrue(before.contains("<dt>Uptime</dt><dd>—</dd>"));
+        assertNoTargets(first.body());
+    }
+
+    @Test
+    void ongoingEventOnTodayAndPastDays() throws Exception {
+        history("website", "2026-11-01T00:00:00Z", NOW.toString());
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        Instant failed = Instant.parse("2026-11-12T20:00:00Z");
+        CheckRecord fail = new CheckRecord(failed, Duration.ofMillis(10), new CheckResult(false, "status 503", Map.of()));
+        history.record("website", fail, new StateChange("website", State.UP, State.DOWN, fail, failed, "status 503", 1));
+
+        String yesterday = dayDetail(get(server, "/service/website/day/2026-11-12", "status.example.com").body());
+        assertTrue(yesterday.contains("<time datetime=\"2026-11-12T20:00:00Z\">20:00:00</time> – <span class=\"event-end\">"
+                + "<time datetime=\"2026-11-13T00:00:00Z\">24:00:00</time></span>"), yesterday);
+        assertTrue(yesterday.contains("Duration on this day: </span>4h</span>"));
+        assertTrue(yesterday.contains("– ongoing, 16h"), yesterday);
+        String today = dayDetail(get(server, "/service/website/day/2026-11-13", "status.example.com").body());
+        assertTrue(today.contains("<li class=\"day-event event-ongoing\""), today);
+        assertTrue(today.contains("<time datetime=\"2026-11-13T00:00:00Z\">00:00:00</time> – <span class=\"event-end\">ongoing</span>"), today);
+        assertTrue(today.contains("Duration on this day: </span>12h</span>"), today);
+    }
+
+    @Test
+    void dayPageNotFoundCases() throws Exception {
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        assertEquals(200, get(server, "/service/website/day/2026-11-13", "status.example.com").status());
+        assertEquals(200, get(server, "/service/survival/day/2026-11-13", "status.example.com").status());
+        // Malformed or impossible dates, the future, extra segments.
+        for (String date : List.of("2026-11-1", "2026-13-01", "2026-02-30", "20261113", "+2026-11-13", "2026-11-14", "9999-12-31")) {
+            assertEquals(404, get(server, "/service/website/day/" + date, "status.example.com").status(), date);
+        }
+        assertEquals(404, get(server, "/service/website/day/", "status.example.com").status());
+        assertEquals(404, get(server, "/service/website/day/2026-11-13/x", "status.example.com").status());
+        // Private (anonymous), out of scope, unknown id.
+        assertEquals(404, get(server, "/service/intranet/day/2026-11-13", "status.example.com").status());
+        assertEquals(404, get(server, "/service/website/day/2026-11-13", "mc-status.example.com").status());
+        assertEquals(404, get(server, "/service/nope/day/2026-11-13", "status.example.com").status());
+        viewer = new Viewer("alice", true);
+        assertEquals(200, get(server, "/service/intranet/day/2026-11-13", "status.example.com").status());
+    }
+
+    @Test
+    void dayShowsOnlyVisibleNotes() throws Exception {
+        notedHistory("website");
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+        for (String path : List.of("/service/website/day/2026-11-10", "/service/website?day=2026-11-10")) {
+            String detail = dayDetail(get(server, path, "status.example.com").body());
+            assertTrue(detail.contains("<p class=\"note-text\">Public &lt;b&gt;note&lt;/b&gt;\nsecond line</p>"), path);
+            assertFalse(detail.contains(PRIVATE_NOTE), path);
+        }
+        viewer = new Viewer("alice", true);
+        assertTrue(dayDetail(get(server, "/service/website/day/2026-11-10", "status.example.com").body()).contains(PRIVATE_NOTE));
+    }
+
+    @Test
+    void dayParameterOpensTheRightCalendarPage() throws Exception {
+        history("website", "2026-06-01T00:00:00Z", NOW.toString(),
+                event("ev-aug", "2026-08-15T10:00:00Z", "2026-08-15T10:30:00Z"),
+                event("ev-span", "2026-11-10T22:00:00Z", "2026-11-11T01:30:00Z"));
+        WebServer server = start(UnknownHostsPolicy.DEFAULT);
+
+        // The main-page bar's link: page 0 holds Sep–Nov, with the day's details open.
+        String nov = get(server, "/service/website?view=calendar&day=2026-11-11", "status.example.com").body();
+        assertEquals(List.of("2026-09", "2026-10", "2026-11"), months(nov));
+        assertTrue(nov.contains("<a class=\"tab tab-current\" href=\"/service/website?view=calendar\" aria-current=\"page\">Calendar</a>"));
+        assertTrue(nov.contains("class=\"cal-day cal-red cal-selected\" href=\"/service/website/day/2026-11-11\" data-date=\"2026-11-11\""
+                + " aria-current=\"date\""), nov);
+        assertEquals(1, count(nov, "cal-selected"));
+        String detail = dayDetail(nov);
+        assertTrue(detail.contains("data-date=\"2026-11-11\""));
+        assertEquals(List.of("ev-span"), dayEventIds(detail));
+        assertTrue(detail.contains("<time datetime=\"2026-11-11T00:00:00Z\">00:00:00</time>"), detail);
+        assertTrue(nov.contains("<p class=\"day-close\"><a href=\"/service/website?view=calendar&amp;page=0#calendar\">Close</a></p>"));
+        // It matches the day page's content.
+        assertEquals(dayDetail(get(server, "/service/website/day/2026-11-11", "status.example.com").body())
+                .replace("<h2 ", "<h3 ").replace("</h2>", "</h3>"), detail);
+
+        // An older day: the page containing it (page 1 = Jun–Aug), regardless of ?page=.
+        String aug = get(server, "/service/website?view=calendar&page=3&day=2026-08-15", "status.example.com").body();
+        assertEquals(List.of("2026-06", "2026-07", "2026-08"), months(aug));
+        assertEquals(List.of("ev-aug"), dayEventIds(dayDetail(aug)));
+        assertTrue(aug.contains("data-date=\"2026-08-15\" aria-current=\"date\""));
+        // ?day= alone opens the calendar too.
+        assertEquals(List.of("2026-03", "2026-04", "2026-05"),
+                months(get(server, "/service/website?day=2026-03-01", "status.example.com").body()));
+
+        // Invalid or future days are ignored: no details, the requested (or first) page.
+        for (String query : List.of("?view=calendar&day=nope", "?view=calendar&day=2026-11-14", "?view=calendar&day=2026-02-30")) {
+            String body = get(server, "/service/website" + query, "status.example.com").body();
+            assertEquals(List.of("2026-09", "2026-10", "2026-11"), months(body), query);
+            assertFalse(body.contains("class=\"day-detail\""), query);
+            assertFalse(body.contains("cal-selected"), query);
+        }
+        assertEquals(List.of("2026-06", "2026-07", "2026-08"),
+                months(get(server, "/service/website?view=calendar&page=1&day=2027-01-01", "status.example.com").body()));
+        // A list view without ?day= has no details; ?day= on a private service is still 404.
+        assertFalse(get(server, "/service/website", "status.example.com").body().contains("day-detail"));
+        assertEquals(404, get(server, "/service/intranet?day=2026-11-11", "status.example.com").status());
+        assertNoTargets(nov);
+    }
+
+    @Test
+    void calendarPageForDay() {
+        YearMonth nov = YearMonth.of(2026, 11);
+        assertEquals(0, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 11, 13)));
+        assertEquals(0, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 9, 1)));
+        assertEquals(1, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 8, 31)));
+        assertEquals(1, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 6, 1)));
+        assertEquals(2, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2026, 5, 31)));
+        assertEquals(4, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(2025, 9, 1)));
+        assertEquals(ServicePage.MAX_CALENDAR_PAGE, ServicePage.calendarPageFor(nov, java.time.LocalDate.of(1, 1, 1)));
     }
 
     private void assertNoTargets(String body) {

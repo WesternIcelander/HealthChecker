@@ -1065,7 +1065,7 @@ test list are build, docs or manual steps.
 - [x] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
 - [x] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
 - [x] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
-- [ ] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
+- [x] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
 - [ ] JSON: `/api/service/{id}`, `/events`, `/days`, `/event/{eventId}`. **Tests:** same visibility and scope rules as the HTML; `/days` range limit.
 
 ### M8 — MinecraftChecker plugin (repo `plugin-projects/MinecraftChecker`)
@@ -1386,4 +1386,16 @@ them; see CLAUDE.md.
   ("{date}: upcoming"). Days before the endpoint's first coverage (and every day of an endpoint without coverage) are grey
   without being computed, so old pages don't fill the day cache. `page` is parsed like the list's and clamped to 4000
   (1000 years); "← Earlier" (`rel="next"`) is left out only on that last page and "Later →" (`rel="prev"`) on page 0, both
-  linking to `#calendar`. Until the day popover / day page step, day blocks are not links.
+  linking to `#calendar`. Day blocks up to today are links to their day page (future days stay plain blocks).
+- Day page and popover (`web.page.ServicePage`): `/service/{id}/day/{yyyy-mm-dd}` has the service page's `404` rules, plus
+  `404` for anything that isn't a real `yyyy-mm-dd` date and for days after today (until M12 gives future days content).
+  It shows the long date, the day's uptime, total counted downtime ("none" / `—` without data), the number of outages
+  (and planned maintenance, when any), then every event (any kind) overlapping the day, oldest first: title linking to
+  the permalink, times within the day (`00:00:00` when it started earlier, `24:00:00` when it went on later, "ongoing" on
+  today), the duration within the day, a "Whole outage" line with the full start – end and duration when clipped, and the
+  visible notes. Days before the first coverage aren't computed (no data). The popover reuses the day page: `app.js`
+  fetches it and shows its `.day-detail` section next to the day (close button, Escape, click outside; a failed fetch
+  navigates to the page), so there's one renderer and no JSON needed. `?day=` (a valid date up to today) selects the
+  calendar view on the page containing that day, overriding `?view=` and `?page=`, marks the day (`cal-selected`,
+  `aria-current="date"`) and renders the same section in a panel below the calendar with a "Close" link; `app.js` moves it
+  into the popover. An invalid or future `?day=` is ignored.
