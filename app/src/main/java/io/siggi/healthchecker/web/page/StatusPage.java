@@ -15,7 +15,6 @@ import io.siggi.healthchecker.plugin.JsonEndpointConfig.Target;
 import io.siggi.healthchecker.schedule.Endpoint;
 import io.siggi.healthchecker.status.EndpointStatus;
 import io.siggi.healthchecker.status.State;
-import io.siggi.healthchecker.web.Durations;
 import io.siggi.healthchecker.web.Html;
 import io.siggi.healthchecker.web.WebServer;
 import io.siggi.healthchecker.web.layout.ResolvedLayout;
@@ -29,16 +28,18 @@ import io.siggi.healthchecker.web.view.ViewFilter;
 import io.siggi.healthchecker.web.view.Viewer;
 import io.siggi.http.HTTPRequest;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.function.Function;
 import java.util.function.Supplier;
+
+import static io.siggi.healthchecker.web.page.PageSupport.stateId;
+import static io.siggi.healthchecker.web.page.PageSupport.stateLabel;
+import static io.siggi.healthchecker.web.page.PageSupport.write;
 
 /**
  * The main page ({@code /}) and {@code GET /api/status}. Both are built from the same data:
@@ -138,13 +139,7 @@ public final class StatusPage {
         Model model = found.get();
         Site site = model.site();
         StringBuilder html = new StringBuilder(16384);
-        html.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
-                .append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-                .append("<meta http-equiv=\"refresh\" content=\"60\">\n")
-                .append("<title>").append(Html.escape(site.title())).append("</title>\n")
-                .append("<link rel=\"stylesheet\" href=\"").append(Html.escape(site.link("/static/style.css"))).append("\">\n")
-                .append("</head>\n<body>\n<header class=\"site-header\"><h1><a href=\"").append(Html.escape(site.link("/"))).append("\">")
-                .append(Html.escape(site.title())).append("</a></h1></header>\n<main>\n");
+        PageSupport.head(html, site, site.title(), true);
         String overall = stateId(model.overall());
         html.append("<p class=\"banner banner-").append(overall).append("\" role=\"status\">")
                 .append("<span class=\"dot state-").append(overall).append("\" aria-hidden=\"true\"></span>")
@@ -169,8 +164,7 @@ public final class StatusPage {
         if (model.sections().isEmpty()) {
             html.append("<p class=\"empty muted\">No services to show.</p>\n");
         }
-        html.append("</main>\n<script src=\"").append(Html.escape(site.link("/static/app.js")))
-                .append("\" defer></script>\n</body>\n</html>\n");
+        PageSupport.foot(html, site);
         write(request, "200 OK", "text/html; charset=utf-8", html.toString());
     }
 
@@ -186,36 +180,8 @@ public final class StatusPage {
                 .append("<span class=\"uptime\"><span class=\"label\">24h</span> ").append(Html.escape(row.day().format())).append("</span>")
                 .append("<span class=\"uptime\"><span class=\"label\">60d</span> ").append(Html.escape(row.sixtyDays().format())).append("</span>")
                 .append("</span></a>\n");
-        html.append("<div class=\"bar\" role=\"group\" aria-label=\"").append(Html.escape(service.name()))
-                .append(": last ").append(BAR_DAYS).append(" days\">");
-        for (DaySummary day : row.days()) {
-            String tip = tooltip(day);
-            html.append("<a class=\"seg seg-").append(DayColor.of(day, dashboard).id()).append("\" href=\"")
-                    .append(Html.escape(site.link("/service/" + service.id() + "?view=calendar&day=" + day.date())))
-                    .append("\" title=\"").append(Html.escape(tip)).append("\" aria-label=\"").append(Html.escape(tip))
-                    .append("\"></a>");
-        }
-        html.append("</div>\n<div class=\"bar-legend\" aria-hidden=\"true\"><span>").append(BAR_DAYS)
-                .append(" days ago</span><span>today</span></div>\n</li>\n");
-    }
-
-    /** Date, uptime, total downtime and number of outages, e.g. {@code 2026-11-13: 99.3% uptime, 10m down, 1 outage}. */
-    static String tooltip(DaySummary day) {
-        StringBuilder tip = new StringBuilder().append(day.date()).append(": ");
-        if (!day.uptime().hasData()) {
-            return tip.append("no data").toString();
-        }
-        tip.append(day.uptime().format()).append(" uptime, ");
-        if (day.uptime().downtime().isZero()) {
-            tip.append("no downtime");
-        } else {
-            tip.append(Durations.format(day.uptime().downtime())).append(" down");
-        }
-        tip.append(", ").append(day.events()).append(day.events() == 1 ? " outage" : " outages");
-        if (day.maintenanceEvents() > 0) {
-            tip.append(", ").append(day.maintenanceEvents()).append(" planned maintenance");
-        }
-        return tip.toString();
+        PageSupport.bar(html, site, service.id(), service.name(), row.days(), dashboard);
+        html.append("</li>\n");
     }
 
     private static String bannerText(Model model) {
@@ -226,18 +192,6 @@ public final class StatusPage {
             return "Waiting for the first checks";
         }
         return "All systems operational";
-    }
-
-    private static String stateId(State state) {
-        return state.name().toLowerCase(Locale.ROOT);
-    }
-
-    private static String stateLabel(State state) {
-        return switch (state) {
-            case UP -> "Up";
-            case DOWN -> "Down";
-            case UNKNOWN -> "Not checked yet";
-        };
     }
 
     // ---- JSON ----
@@ -340,15 +294,5 @@ public final class StatusPage {
     private static JsonElement percent(Uptime uptime) {
         OptionalDouble p = uptime.percent();
         return p.isPresent() ? new JsonPrimitive(p.getAsDouble()) : JsonNull.INSTANCE;
-    }
-
-    private static void write(HTTPRequest request, String status, String contentType, String body) throws Exception {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        request.response.setHeader(status);
-        request.response.setHeader("Content-Type", contentType);
-        request.response.setHeader("Cache-Control", "no-store");
-        request.response.setHeader("X-Content-Type-Options", "nosniff");
-        request.response.setHeader("Content-Length", Integer.toString(bytes.length));
-        request.response.write(bytes);
     }
 }

@@ -205,6 +205,58 @@ main {
   .seg { border-radius: 1px; }
 }
 
+/* ---- service page ---- */
+
+.crumbs { margin: 0 0 12px; font-size: 0.9rem; }
+
+.service-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.state-line { margin: 2px 0 12px; }
+.state-label { font-weight: 600; }
+.state-label.state-up { color: var(--up); }
+.state-label.state-down { color: var(--down); }
+.state-label.state-maintenance { color: var(--maintenance); }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px 16px;
+  margin: 0 0 12px;
+}
+
+.fact { min-width: 0; }
+.fact dt { color: var(--muted); font-size: 0.8rem; }
+.fact dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.fact-targets, .fact-details, .fact-message { grid-column: 1 / -1; }
+
+.plain { list-style: none; margin: 0; padding: 0; }
+
+.checks-title { margin: 20px 0 6px; font-size: 1rem; }
+
+.checks {
+  display: flex;
+  gap: 1px;
+  height: 16px;
+}
+
+.check {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 12px;
+  border-radius: 1px;
+  background: var(--nodata);
+}
+
+.check-pass { background: var(--up); }
+.check-fail { background: var(--down); }
+
 /* ---- tooltip (app.js) ---- */
 
 .tooltip {

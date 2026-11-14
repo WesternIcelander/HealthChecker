@@ -1062,7 +1062,7 @@ test list are build, docs or manual steps.
 - [x] Main page and `GET /api/status`: overall banner, category sections, rows with state dot, name, 24 h / 60 d %, 60-segment day bar with configurable colours, tooltips, links; responsive down to 320 px; light/dark. **Tests:** overall state and 200/503 from visible endpoints only; bar has 60 segments with correct colours for fixture data; no declared target anywhere in anonymous HTML or JSON (search output for every configured URL/host).
 
 ### M7 — Service page: list & calendar views
-- [ ] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
+- [x] `/service/{id}` header (state, uptimes, bar, recent pass/fail strip); `404` for private when anonymous or out of site scope. **Tests:** 404 cases; header fields per visibility.
 - [ ] List view (default): paginated events, newest first, durations, expandable notes (public only when anonymous), event permalink page. **Tests:** paging; duration formatting; anonymous sees only public notes.
 - [ ] Calendar view: 3 months per page (current + 2 previous on page 0), Earlier/Later paging, colour-only day blocks, Monday-first grid. **Tests:** page 0/1/2 month ranges; year rollover; no "Later" on page 0; days before first coverage grey.
 - [ ] Day popover (JS) and `/service/{id}/day/{date}` fallback page: uptime, downtime, events clipped to the day; `?day=` deep link from the main-page bar. **Tests:** event spanning two days shown on both, clipped; `?day=` opens the right page.
@@ -1358,3 +1358,11 @@ them; see CLAUDE.md.
   `uptime` are numbers or `null` without data; each day also has `color` and, when non-zero, `maintenanceEvents`;
   a category `summary` also has `unknown`; `last`, `visibility` and `targets` appear only when `ViewFilter` provides
   them. Banner text: "N service(s) down", else "Waiting for the first checks", else "All systems operational".
+- Service page header (app, `web.page.ServicePage`; shared HTML helpers moved to `PageSupport`): `/service/{id}` answers
+  `404` (by writing nothing, so the body is the same as for an unknown id) for a rejected host, an id not matching
+  `[a-z0-9-]+`, extra path segments, an unknown id, an endpoint outside the site scope (even with `view.private`), and an
+  endpoint the viewer can't see. The header shows name, state with "since", 24 h / 60 d uptime, the same 60-day bar as
+  the main page, and the recent checks (oldest first) as pass/fail blocks; beyond that it shows exactly the fields
+  `ViewFilter` provides: type, last check (time, pass/fail, latency, message, details) for `public` endpoints, plus
+  visibility and targets for `view.private`. Times are shown as `yyyy-MM-dd HH:mm:ss` in the configured timezone.
+  Check tooltips show time, pass/fail and, when visible, latency and message. The service page doesn't auto-refresh.
