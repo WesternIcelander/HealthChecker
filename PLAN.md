@@ -1096,7 +1096,7 @@ test list are build, docs or manual steps.
 - [x] `AuditLog` (`data/audit.jsonl`) for all dashboard edits incl. layout, events and notes; `/admin/audit` page (`audit.view`). **Tests:** each edit type writes an entry with before/after; secrets masked; page requires `audit.view`.
 
 ### M12 — Scheduled maintenance
-- [ ] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
+- [x] `MaintenanceStore`: windows (endpoints and/or categories, start/end, title, description, notes, `notifyChannels`), validation, versioned atomic writes, audit entries. **Tests:** cannot create in the past or longer than the limit; `end` > `start`; stale save 409; audit entries.
 - [ ] Recurrence: daily / weekly / monthly rules with `until`, DST-safe expansion in the configured timezone, skip/edit single occurrence, materialise occurrences when they start. **Tests:** weekly recurrence across a DST change keeps local time; "first Sunday" monthly; skip and edit one occurrence; editing a series doesn't change past occurrences.
 - [ ] `MaintenanceScheduler`: start/end transitions; "End now" and "Extend"; affected endpoints show state `MAINTENANCE`. History integration: DOWN during a window → `kind: maintenance` event; split at window end into a normal `outage`; uptime excludes maintenance downtime unless `countsAsDowntime`. **Tests:** with a fake clock: transitions; end now; extend; down inside window → maintenance event, no outage; down past window end → outage starting at window end; uptime with and without `countsAsDowntime`.
 - [ ] Dashboard and JSON: "Schedule maintenance" form (main page and service page), `/maintenance/{id}` page, edit/cancel; "Upcoming maintenance" box; blue day segments and calendar outlines; "Planned" badge and All/Outages/Maintenance filter; popover lists maintenance separately; `/api/maintenance`, `/api/maintenance/{id}`, maintenance state in `/api/status`. **Tests:** anonymous sees windows only for visible endpoints, with a filtered affected list; window with no visible endpoints hidden; no `maintenance.manage` → 403.
@@ -1676,3 +1676,24 @@ them; see CLAUDE.md.
   services, targets and private notes), like the editors; anonymous visitors go to `/login`, others get `403`. The main
   page shows an "Audit log" link to users who may open it. The file is read whole for each page view (edits are rare;
   no rotation in v1). M12 (maintenance) and M13 (rejected OIDC logins) add their own actions.
+- `MaintenanceStore` (app, package `maintenance`, with `MaintenanceWindow`): `{dataDir}/maintenance.json` is
+  `{"version", "windows": [{"id", "version", "title", "description"?, "start", "end", "endpoints", "categories",
+  "notifyChannels", "notes", "createdBy", "createdByName", "createdAt", "updatedAt", "cancelledAt"?}]}`; strict
+  decoding like the other stores (unknown keys, bad types or a duplicate id fail the load, naming the file), leftover
+  `.maintenance.json.*.tmp` files removed at load, every write via `AtomicFiles`. Ids are UUIDs. The file `version`
+  counts writes; the 409 check uses each window's own `version` (edit and cancel name it; `VersionConflictException`),
+  so editing one window doesn't make forms for other windows stale. Notes work like event notes (`EventNote`, same
+  text rules and 10 000 limit, no version check). Status is derived: `cancelledAt` set → cancelled, else scheduled
+  before `start`, in progress from `start` (inclusive) to `end` (exclusive), then completed; a category covers whatever
+  is in it at the moment (`affects(endpoint, category)`). Validation (`InvalidWindowException`, `key: message`): title
+  trimmed, required, ≤ 200 characters, no control characters; description optional, ≤ 10 000; `start` strictly after now
+  on create; `end` > `start` and ≤ `maxLengthDays` (only checked when the times change, so lowering the limit doesn't
+  lock existing windows); at least one endpoint or category; endpoint, category and channel ids must exist, except ids
+  the window already had (they may have been deleted since); duplicates and blanks are dropped. On edit, a `start` or
+  `end` that has passed is fixed and a changed one must be in the future, and once a window has ended its endpoints and
+  categories are fixed too (title, description, channels and notes can still be corrected). Cancelled windows can't be
+  edited (notes still can). Only a window that hasn't started can be cancelled; one in progress is ended with "End now"
+  (scheduler step). The store records the audit entries itself, after a successful write and under its lock, with an
+  `Actor` (user id, display name): `maintenance.create` / `.edit` / `.cancel` (id = window; the window without notes),
+  `maintenance.note.add` / `.edit` / `.delete` (`{window}/{note}`; the note as for events). The store isn't wired into
+  `run` yet; that comes with the scheduler and dashboard steps, which supply `References` (endpoint store, channels).
