@@ -1071,7 +1071,7 @@ test list are build, docs or manual steps.
 ### M8 — MinecraftChecker plugin (repo `plugin-projects/MinecraftChecker`)
 - [x] `mvn install` HealthChecker so `HealthChecker-API` is in the local repo. Plugin project: pom (`io.siggi:MinecraftChecker`, API + Gson `provided`), `META-INF/services` entry, `.gitignore`, README. **Tests:** smoke test that the plugin is found by `ServiceLoader`.
 - [x] Server List Ping: VarInt framing with packet size cap, handshake (original host), status request/response, MOTD flattening, optional ping. **Tests:** against a fake in-process status server: valid response; chat-component MOTD; garbage; oversized packet; timeout.
-- [ ] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
+- [x] SRV lookup via JNDI DNS when `port` unset (priority/weight ordering, fallback on connect failure, `srv: false`); declared targets incl. resolved target. **Tests:** with an injected resolver: ordering, weighted choice, fallback to next record, no record → 25565, `port` set skips SRV.
 - [ ] Settings `host`, `port`, `srv`, `minOnline`, `expectVersionContains` with validation (per-field `ConfigException`s), `settings()` specs and `displayName()`. **Tests:** each invalid setting reports its key; too few players fails; version mismatch fails.
 - [ ] Integration check: build the plugin jar, copy it into a temp `plugins/` dir, start HealthChecker against a fake status server, and confirm via `/api/status` that the endpoint goes UP. Script it as `scripts/it-minecraft.sh` in the plugin repo.
 
@@ -1422,3 +1422,17 @@ them; see CLAUDE.md.
   late pong just leaves the round-trip time out. MOTD: component `text` (or `translate`'s `fallback`, else the key) and
   `extra` are concatenated, `§` codes stripped, each line trimmed. Protocol errors are `PingException` (an
   `IOException`) with messages that never contain the target.
+- SRV lookup (MinecraftChecker: `SrvResolver`, `JndiSrvResolver`, `SrvOrdering`, `ServerAddressResolver`,
+  `MinecraftChecker`): SRV is skipped when `port` is set, `srv` is `false`, or `host` is an IP literal. Records are
+  ordered as in RFC 2782 (priority ascending; within a priority, zero-weight records first, then a running-sum
+  weighted pick, repeated without replacement). Records with target `.` or port 0 are dropped; with no usable record,
+  or when the lookup fails (not just NXDOMAIN), `host:25565` is used, like the vanilla client. The lookup gets half of
+  the check timeout; the rest is shared for connecting (each attempt's connect limit is the remaining time divided by
+  the addresses left), while the exchange may use all remaining time. Only connect failures (refused, unreachable,
+  unresolvable target, connect timeout: `ConnectFailedException`) move on to the next record; a protocol error or a
+  timeout after connecting fails the check. The handshake carries the configured `host` and the configured port, or
+  25565 when it's unset (as the modern vanilla client sends it). Declared targets are fixed when `create()` runs, so
+  `create()` does a best-effort SRV lookup (2 s limit; a failure is ignored, not a config error) and declares `host`,
+  `port` (when set) and each record's `srv target` and `srv port`. Records that change later aren't declared;
+  messages never contain targets anyway. `create()` reads `host`/`port`/`srv` without further validation until the
+  settings step.
