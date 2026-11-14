@@ -1035,7 +1035,7 @@ test list are build, docs or manual steps.
 ### M1 — Skeleton, modules & config
 - [x] Add `.DS_Store` to `.gitignore`.
 - [x] Convert to multi-module: `HealthChecker-Parent` (root), `HealthChecker-API` (`api/`), `HealthChecker` (`app/`, move `Main`); shading in app only, Gson not relocated. Add Gson and JUnit 5 + surefire. **Tests:** a trivial smoke test so `mvn test` runs in both modules.
-- [ ] `ConfigLoader`: server, dataDir, timezone, dashboard, defaults, sites, categories, endpoints (common fields incl. `id`, `category`, `reminders`), `${env:…}` substitution, collected error reporting. **Tests:** loading a full config; defaults applied; each validation rule; all errors reported together; env substitution and unresolved `${env:…}`.
+- [x] `ConfigLoader`: server, dataDir, timezone, dashboard, defaults, sites, categories, endpoints (common fields incl. `id`, `category`, `reminders`), `${env:…}` substitution, collected error reporting. **Tests:** loading a full config; defaults applied; each validation rule; all errors reported together; env substitution and unresolved `${env:…}`.
 - [ ] `Main` with `run` (default) and `hash-password` subcommands (hasher is a stub until M9); `config.example.json` in repo root. **Tests:** `config.example.json` loads without errors.
 
 ### M2 — Plugin API & loading
@@ -1171,3 +1171,24 @@ them; see CLAUDE.md.
   (`{providerId}:{value}`) to send to the admin, who adds it to a user's `identities`.
 - Sites scope the view by `Host` header to chosen categories/services. This is
   presentation only, not a security boundary.
+- `ConfigLoader` validates what it can on its own. Checks that need other components run
+  there: known endpoint types and plugin settings (M2 `PluginManager`/`EndpointConfig`),
+  users/roles/providers and "`publicBaseUrl` required with OIDC/OAuth" (M9/M13), channel
+  settings (M14), ids in both config and `data/endpoints.json` (M11). `auth` and
+  `notifications` are kept as raw, env-substituted JSON for those modules; `notify` names
+  are checked against the keys of `notifications.channels`.
+- Config is strict JSON (no comments or trailing commas). Unknown keys are errors in every
+  section the loader parses; endpoint keys other than the common ones are passed on as
+  type-specific settings.
+- Ranges: `intervalSeconds` 1–86400, `timeoutMillis` 100–300000, `failureThreshold` 1–100,
+  reminder minutes 1–525600, `reminderRepeatMinutes` 0 (= off, the default) or more,
+  `maintenance.maxLengthDays`/`upcomingDays` 1–366. Dashboard colour thresholds 0–100 with
+  `yellowBelow ≥ orangeBelow ≥ redBelow`.
+- `defaults.notify` omitted means no notifications. Endpoint names must be unique
+  (case-sensitive); endpoint `type` must match `[a-z0-9-]+`.
+- `${env:NAME}` may appear anywhere inside any string value (not keys); `NAME` is
+  `[A-Za-z_][A-Za-z0-9_]*`; substituted values aren't scanned again; an empty variable counts
+  as set. There's no escape syntax.
+- `timezone` must be an IANA region id (`UTC` works; bare offsets don't). `dataDir` and
+  `plugins.dir` are relative to the working directory.
+- Site hosts are lowercased, without ports; a wildcard is only allowed as a leading `*.`.
